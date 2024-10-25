@@ -129,9 +129,6 @@ void zui_box();
 
 void zui_popup();
 
-// set clipboard function
-void zui_clipboard(const char *(*get_clipboard)());
-
 // set justification
 void zui_just(i32 justification);
 
@@ -145,7 +142,7 @@ void zui_font(zfont *font);
 void zui_end();
 
 // returns true if window is displayed
-void zui_window(i32 width, i32 height, double ts);
+void zui_window(i32 width, i32 height, float ts);
 
 // creates a label
 void zui_label(char *text);

@@ -175,10 +175,12 @@ static void event(const sapp_event* ev) {
                 zui_input_keyup(code);
             break;
         case SAPP_EVENTTYPE_CHAR: {
+            // on macos, delete has backspace behavior
+            #ifdef __MACH__
             if (ev->char_code == 127)
-                zui_input_char('\b');
-            else
-                zui_input_char(ev->char_code & 255);
+                ev->char_code = '\b';
+            #endif
+            zui_input_char(ev->char_code & 255);
         } break;
         case SAPP_EVENTTYPE_CLIPBOARD_PASTED: {
             const char *str = sapp_get_clipboard_string();

@@ -26,9 +26,32 @@ typedef struct zcolor { u8 r, g, b, a; } zcolor;
 typedef struct zvec2 { i32 x, y; } zvec2;
 typedef struct zrect { i32 x, y, w, h; } zrect;
 typedef struct zfont {
+	i32 id;
+	i32 bytes;
     zvec2 (*text_size)(struct zfont *font, char *str, i32 len);
-    void *handle;
 } zfont;
+
+typedef struct zrenderer {
+	void (*render)(void *data);
+	void *data;
+} zrenderer;
+
+#ifdef ZAPP_DECLARE
+typedef struct zapp_desc {
+	i32 width;
+	i32 height;
+	char *name;
+	void *user_data;
+	void(*init)(void *user_data);
+	void(*frame)(float ts, void *user_data);
+	void(*close)(void *user_data);
+} zapp_desc;
+i32 zapp_width();
+i32 zapp_height();
+void zapp_render();
+zfont *zapp_font(char *name, i32 size);
+void zapp_launch(zapp_desc *description);
+#endif
 
 enum ZUI_KEYS {
     ZK_L_SHIFT = 1 << 0,
@@ -47,6 +70,7 @@ enum ZUI_KEYS {
     ZK_SHORTCUT = ZK_SUPER,
 #endif
 };
+
 enum ZUI_MOUSE {
     ZM_LEFT_CLICK = 1,
     ZM_RIGHT_CLICK = 2,
@@ -100,7 +124,9 @@ typedef struct zcmd_justify  { zcmd_ui _; i32 justification; } zcmd_justify;
 typedef struct zcmd_set_size { zcmd_ui _; zvec2 size; } zcmd_set_size;
 
 typedef struct zcmd_widget { i32 id, bytes, next, zindex; zrect bounds; zrect used; } zcmd_widget;
-typedef struct zcmd_text   { zcmd_widget _; char *buffer; i32 len; i32 *state; } zcmd_text;
+
+typedef struct zs_text     { i32 flags, index, ofs, selection; } zs_text;
+typedef struct zcmd_text   { zcmd_widget _; char *buffer; i32 len; zs_text *state; } zcmd_text;
 typedef struct zcmd_btn    { zcmd_widget _; u8 *state; } zcmd_btn;
 typedef struct zcmd_combo  { zcmd_widget _; char *tooltip, *csoptions; i32 *state; } zcmd_combo;
 typedef struct zcmd_label  { zcmd_widget _; char *text;  i32 len; } zcmd_label;
@@ -121,6 +147,8 @@ void zui_input_mousemove(zvec2 pos);
 void zui_input_keydown(i32 keycode);
 void zui_input_keyup(i32 keycode);
 void zui_input_char(char c);
+void zui_input_select();
+void zui_input_copy(void (*set_clipboard)(char *data, i32 len));
 
 void zui_init();
 
@@ -160,7 +188,7 @@ bool zui_button(char *text, u8 *state);
 void zui_validator(bool (*validator)(char *text));
 
 // creates a single-line text input
-void zui_text(char *buffer, i32 len, i32 *state);
+void zui_text(char *buffer, i32 len, zs_text *state);
 
 // creates a multi-line text input
 void zui_textbox(char *buffer, i32 len, i32 *state);

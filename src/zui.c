@@ -25,6 +25,8 @@ typedef struct zui_ctx {
     i32 width, height;
     zvec2 padding;
     zfont *font;
+	void (*renderer)(void *user_data);
+	void *renderer_data;
     zvec2 next_size;
     i32 justification;
     i32 prev;
@@ -32,6 +34,7 @@ typedef struct zui_ctx {
     zui_buf ui;
     zui_buf draw;
     zui_buf stack;
+	zui_buf zdeque;
     i32 ui_reader;
     u8 *cmd_reader;
     i32 __focused; // used for calculating focused
@@ -39,11 +42,12 @@ typedef struct zui_ctx {
     i32 hovered;
     struct {
         zvec2 mouse_pos;
-        i32 mouse_state;
-        i32 modifier_state;
         zvec2 prev_mouse_pos;
+        i32 mouse_state;
         i32 prev_mouse_state;
         zui_buf text;
+		void (*clipboard)(char *data, i32 len);
+		bool ctrl_a;
     } input;
     struct {
         float delta;
@@ -79,6 +83,32 @@ static void *__ui_alloc(i32 size) {
 static void *__cont_alloc(i32 size) {
     *(i32*)__buf_alloc(&ctx->stack, 4) = ctx->ui.used;
     return __ui_alloc(size);
+}
+static void *__draw_alloc(i32 size, i32 zindex) {
+	if (ctx->zdeque.cap) { // use deque for zindex ordering for graphics libraries without a depth buffer
+		zvec2 *new_pair = __buf_alloc(&ctx->zdeque, sizeof(zvec2));
+		*new_pair = (zvec2) { zindex, ctx->draw.used };
+
+		zvec2 *pairs = (zvec2*)ctx->zdeque.data;
+
+		i32 index = new_pair - pairs;
+
+		i32 parent = (index - 1) / 2;
+		while (pairs[index].x < pairs[parent].x) { // our z index is less
+
+		}
+
+		// percolate down
+
+
+
+		return __buf_alloc(&ctx->draw, size);
+	}
+	else { // sneak z-index in front of draw data
+		void *ret = __buf_alloc(&ctx->draw, size + sizeof(i32));
+		*(i32*)ret = zindex;
+		return (u8*)ret + sizeof(i32);
+	}
 }
 static void *__buf_peek(zui_buf *l, i32 size) {
     return (l->data + l->used - size);
@@ -194,6 +224,11 @@ bool __ui_pressed(i32 buttons) {
         return true;
     return false;
 }
+bool __ui_dragged(i32 buttons) {
+    if(ctx->input.mouse_state & ctx->input.prev_mouse_state & buttons)
+        return true;
+    return false;
+}
 bool __ui_clicked(i32 buttons) {
     if(ctx->input.mouse_state & (ctx->input.mouse_state ^ ctx->input.prev_mouse_state) & buttons)
         return true;
@@ -290,15 +325,21 @@ void zui_input_mouseup(i32 btn) {
 void zui_input_mousemove(zvec2 pos) {
     ctx->input.mouse_pos = pos;
 }
-void zui_input_keydown(i32 keycode) {
-    ctx->input.modifier_state |= keycode;
-}
-void zui_input_keyup(i32 keycode) {
-    ctx->input.modifier_state &= ~keycode;
-}
+//void zui_input_keydown(i32 keycode) {
+//    ctx->input.modifier_state |= keycode;
+//}
+//void zui_input_keyup(i32 keycode) {
+//    ctx->input.modifier_state &= ~keycode;
+//}
 void zui_input_char(char c) {
     char *ptr = __buf_alloc(&ctx->input.text, 1);
     *ptr = c;
+}
+void zui_input_select() {
+	ctx->input.ctrl_a = true;
+}
+void zui_input_copy(void(*set_clipboard)(char *data, i32 len)) {
+	ctx->input.clipboard = set_clipboard;
 }
 void zui_print_tree() {
     printf("printing tree...\n");
@@ -419,6 +460,8 @@ void zui_end() {
         ctx->input.prev_mouse_pos = ctx->input.mouse_pos;
         ctx->input.prev_mouse_state = ctx->input.mouse_state;
         ctx->input.text.used = 0;
+		ctx->input.clipboard = 0;
+		ctx->input.ctrl_a = false;
     }
 }
 
@@ -670,13 +713,39 @@ static zvec2 __zui_text_size(zcmd_text *data, zvec2 bounds) {
     return sz;
 }
 
+static i32 __zui_text_get_index(zcmd_text *data, i32 len) {
+	zfont *font = ctx->font;
+	zvec2 mp = ctx->input.mouse_pos;
+	bool found = false;
+	for (i32 i = 0; i < len; i++) {
+		zvec2 sz = font->text_size(font, data->buffer, i + 1);
+		sz.x += 5 - data->state->ofs;
+		//zrect r = { data->_.used.x, data->_.used.y, sz.x + 5, sz.y + 10 };
+		if (mp.x >= data->_.used.x && mp.x <= data->_.used.x + sz.x)
+			return i;
+	}
+	if (!found && __vec_within(mp, data->_.used))
+		return len;
+	return -1;
+}
 static void __zui_text_draw(zcmd_text *data) {
-    typedef struct text_ctx { i16 index, ofs; } text_ctx;
-    text_ctx tctx = *(text_ctx*)data->state;
+    zs_text tctx = *(zs_text*)data->state;
     zfont *font = ctx->font;
     i32 len = strlen(data->buffer);
     if(&data->_ == __ui_widget(ctx->focused)) {
-		for(i32 i = 0; i < ctx->input.text.used; i++) {
+		i32 start = 0;
+		if (ctx->input.text.used && tctx.selection) {
+            char c = *(char*)ctx->input.text.data;
+			if (c == '\b' || c == 127) start++;
+			for (i32 i = tctx.index; i < len; i++) {
+				data->buffer[i] = data->buffer[i + tctx.selection];
+				if (data->buffer[i] == 0)
+					break;
+			}
+			len -= tctx.selection;
+			tctx.selection = 0;
+		}
+		for(i32 i = start; i < ctx->input.text.used; i++) {
             char c = ((char*)ctx->input.text.data)[i];
             if(c == 27 || c == 9) { // escape on tab or esc
                 ctx->focused = 0;
@@ -715,8 +784,41 @@ static void __zui_text_draw(zcmd_text *data) {
         }
         data->buffer[data->len - 1] = 0;
     }
-    zvec2 sz = font->text_size(font, data->buffer, tctx.index);
     zvec2 textpos = { data->_.used.x + 5 - tctx.ofs, data->_.used.y + 5 };
+
+	// handle selection
+	if (&data->_ == __ui_widget(ctx->focused)) {
+		if (ctx->input.ctrl_a) {
+			tctx.index = 0;
+			tctx.selection = len;
+		}
+		else if (__ui_clicked(ZM_LEFT_CLICK)) {
+			i32 index = __zui_text_get_index(data, len);
+			tctx.selection = 0;
+			tctx.flags = 0;
+			if (index >= 0)
+				tctx.index = index;
+		}
+		else if (__ui_dragged(ZM_LEFT_CLICK)) {
+			i32 index = __zui_text_get_index(data, len);
+			if (index >= 0) {
+				i32 diff = index - tctx.index;
+				if (diff > tctx.selection)
+					tctx.flags = 0;
+				if (diff >= 0 && tctx.flags == 0) {
+					tctx.selection = diff;
+				} else {
+					tctx.flags = 1;
+					tctx.selection -= diff;
+					tctx.index += diff;
+				}
+			}
+		}
+		if (ctx->input.clipboard) // if copy request, send data
+			ctx->input.clipboard(data->buffer + tctx.index, tctx.selection);
+	}
+
+    zvec2 sz = font->text_size(font, data->buffer, tctx.index);
     if(textpos.x + sz.x + 1 > data->_.used.x + data->_.used.w - 5) {
         i32 diff = textpos.x + sz.x + 6 - data->_.used.x - data->_.used.w;
         tctx.ofs += diff;
@@ -727,15 +829,21 @@ static void __zui_text_draw(zcmd_text *data) {
         tctx.ofs += diff;
         textpos.x -= diff;
     }
+
     zrect cursor = { textpos.x + sz.x, textpos.y, 1, sz.y };
 
     __push_rect_cmd(data->_.used, (zcolor) { 30, 30, 30, 255 }, data->_.zindex);
+	if (true) {
+		zvec2 selection = font->text_size(font, data->buffer + tctx.index, tctx.selection);
+		zrect r = { textpos.x + sz.x, textpos.y, selection.x, selection.y };
+		__push_rect_cmd(r, (zcolor) { 60, 60, 200, 255 }, data->_.zindex);
+	}
     __push_text_cmd(ctx->font, textpos, (zcolor) { 250, 250, 250, 255 }, data->buffer, len, data->_.zindex);
 
-    if(__ui_widget(ctx->focused) == &data->_ && (ctx->time.ms >> 9) & 1) // blink cursor
+    if(__ui_widget(ctx->focused) == &data->_) // draw cursor
         __push_rect_cmd(cursor, (zcolor) { 200, 200, 200, 255 }, data->_.zindex);
 
-    *(text_ctx*)data->state = tctx;
+	*data->state = tctx;
 }
 
 // creates a multi-line text input
@@ -881,6 +989,7 @@ void zui_init() {
     __buf_init(&global_ctx.registry, 256);
     __buf_init(&global_ctx.stack, 256);
     __buf_init(&global_ctx.input.text, 256);
+    __buf_init(&global_ctx.input.clipboard, 256);
     global_ctx.padding = (zvec2) { 5, 5 };
     global_ctx.next_size = (zvec2) { Z_NONE, Z_NONE };
     global_ctx.prev = 0;

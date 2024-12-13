@@ -49,6 +49,7 @@ typedef struct zapp_desc {
 i32 zapp_width();
 i32 zapp_height();
 void zapp_render();
+void zapp_close();
 zfont *zapp_font(char *name, i32 size);
 void zapp_launch(zapp_desc *description);
 #endif
@@ -89,6 +90,7 @@ enum ZUI_WIDGETS {
     ZW_ROW,
     ZW_COL,
     ZW_BTN,
+	ZW_CHECK,
     ZW_TEXT,
     ZW_COMBO,
     ZW_GRID
@@ -107,6 +109,11 @@ enum ZUI_JUSTIFY {
     ZJ_DOWN = 8
 };
 
+enum ZUI_FLAGS {
+	// pressing tab can focus to this element
+	ZF_TABBABLE = 16
+};
+
 typedef struct zcmd      { i32 id, bytes; } zcmd;
 typedef struct zcmd_clip { zcmd header; zrect cliprect; } zcmd_clip;
 typedef struct zcmd_draw_rect { zcmd header; i32 zindex; zrect rect; zcolor color; } zcmd_draw_rect;
@@ -119,15 +126,12 @@ typedef union zcmd_draw {
     zcmd_draw_text text;
 } zcmd_draw;
 
-typedef struct zcmd_ui       { i32 id, bytes, next; } zcmd_ui;
-typedef struct zcmd_justify  { zcmd_ui _; i32 justification; } zcmd_justify;
-typedef struct zcmd_set_size { zcmd_ui _; zvec2 size; } zcmd_set_size;
-
-typedef struct zcmd_widget { i32 id, bytes, next, zindex; zrect bounds; zrect used; } zcmd_widget;
+typedef struct zcmd_widget { u16 id, bytes; i32 next, zindex, flags; zrect bounds; zrect used; } zcmd_widget;
 
 typedef struct zs_text     { i32 flags, index, ofs, selection; } zs_text;
 typedef struct zcmd_text   { zcmd_widget _; char *buffer; i32 len; zs_text *state; } zcmd_text;
 typedef struct zcmd_btn    { zcmd_widget _; u8 *state; } zcmd_btn;
+typedef struct zcmd_check  { zcmd_widget _; u8 *state; } zcmd_check;
 typedef struct zcmd_combo  { zcmd_widget _; char *tooltip, *csoptions; i32 *state; } zcmd_combo;
 typedef struct zcmd_label  { zcmd_widget _; char *text;  i32 len; } zcmd_label;
 typedef struct zcmd_box    { zcmd_widget _; } zcmd_box;
@@ -151,14 +155,16 @@ void zui_input_select();
 void zui_input_copy(void (*set_clipboard)(char *data, i32 len));
 
 void zui_init();
+void zui_close();
 
 void zui_blank();
+
 void zui_box();
 
 void zui_popup();
 
 // set justification
-void zui_just(i32 justification);
+void zui_justify(i32 justification);
 
 // set next element size
 void zui_size(i32 w, i32 h);
@@ -183,6 +189,8 @@ void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
 i32  zui_combo(char *tooltip, char *csoptions, i32 *state);
 
 bool zui_button(char *text, u8 *state);
+
+bool zui_check(u8 *state);
 
 // sets the text validator for text inputs
 void zui_validator(bool (*validator)(char *text));

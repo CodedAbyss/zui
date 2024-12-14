@@ -6,9 +6,18 @@
 #include <stdlib.h>
 #include "zui/src/zui.h"
 
-HDC memory_dc;
-HDC window_dc;
-HWND wnd;
+typedef struct zapp_gdi {
+	HDC memory_dc;
+	HDC window_dc;
+	HBITMAP bitmap;
+	HWND wnd;
+	i32 width;
+	i32 height;
+	bool running;
+} zapp_gdi;
+
+static zapp_gdi app_ctx;
+
 
 static void zui_recv_clipboard(char *text, i32 len) {
 	if (!OpenClipboard(0)) return;
@@ -57,10 +66,21 @@ static LRESULT CALLBACK WindowProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lpa
 	case WM_DESTROY:
 		PostQuitMessage(0);
 		return 0;
+	case WM_SIZE: {
+		u16 width = LOWORD(lparam);
+		u16 height = HIWORD(lparam);
+		if (width == app_ctx.width && height == app_ctx.height)
+			break;
+		DeleteObject(app_ctx.bitmap);
+		app_ctx.bitmap = CreateCompatibleBitmap(app_ctx.window_dc, width, height);
+		app_ctx.width = width;
+		app_ctx.height = height;
+		SelectObject(app_ctx.memory_dc, app_ctx.bitmap);
+	} break;
 	case WM_PAINT: {
 		PAINTSTRUCT paint;
 		HDC dc = BeginPaint(wnd, &paint);
-		BitBlt(dc, 0, 0, 600, 400, memory_dc, 0, 0, SRCCOPY);
+		BitBlt(dc, 0, 0, 600, 400, app_ctx.memory_dc, 0, 0, SRCCOPY);
 		EndPaint(wnd, &paint);
 		return 0;
 	}
@@ -70,6 +90,7 @@ static LRESULT CALLBACK WindowProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lpa
 		case 'C': if (ctrl) zui_input_copy(zui_recv_clipboard); return 0;
 		case 'V': if (ctrl) zui_send_clipboard(); return 0;
 		case 'A': if (ctrl) zui_input_select(); return 0;
+		case VK_TAB: zui_input_char('\t'); return 0;
 		case VK_BACK: zui_input_char('\b'); return 0;
 		case VK_DELETE: zui_input_char(127); return 0;
 		case VK_LEFT: zui_input_char(17); return 0;
@@ -127,17 +148,28 @@ zfont *zapp_font(char *name, i32 size) {
 	return &font->header;
 }
 
+void zapp_font_free(zfont *font) {
+	GdiFont *gdifont = (GdiFont*)font;
+	gdifont->dc;
+	DeleteObject(gdifont->handle);
+	free(gdifont);
+}
+
+i32 zapp_width() { return app_ctx.width; }
+
+i32 zapp_height() { return app_ctx.height; }
+
 void zapp_render() {
-	SelectObject(memory_dc, GetStockObject(DC_PEN));
-	SelectObject(memory_dc, GetStockObject(DC_BRUSH));
+	SelectObject(app_ctx.memory_dc, GetStockObject(DC_PEN));
+	SelectObject(app_ctx.memory_dc, GetStockObject(DC_BRUSH));
 
 	zcmd_draw *cmd;
 	while ((cmd = zui_draw_next())) {
 		switch (cmd->base.id) {
 		case ZCMD_CLIP: {
 			zrect clip = cmd->clip.cliprect;
-			SelectClipRgn(memory_dc, 0);
-			IntersectClipRect(memory_dc, clip.x, clip.y, clip.x + clip.w, clip.y + clip.h);
+			SelectClipRgn(app_ctx.memory_dc, 0);
+			IntersectClipRect(app_ctx.memory_dc, clip.x, clip.y, clip.x + clip.w, clip.y + clip.h);
 		} break;
 		case ZCMD_DRAW_RECT: {
 			zcolor c = cmd->rect.color;
@@ -145,8 +177,8 @@ void zapp_render() {
 			COLORREF color = c.r | (c.g << 8) | (c.b << 16);
 
 			RECT rect = { r.x, r.y, r.x + r.w, r.y + r.h };
-			SetBkColor(memory_dc, color);
-			ExtTextOutW(memory_dc, 0, 0, ETO_OPAQUE, &rect, NULL, 0, NULL);
+			SetBkColor(app_ctx.memory_dc, color);
+			ExtTextOutW(app_ctx.memory_dc, 0, 0, ETO_OPAQUE, &rect, NULL, 0, NULL);
 		} break;
 		case ZCMD_DRAW_TEXT: {
 			if (!cmd->text.text || !cmd->text.font || !cmd->text.len) break;
@@ -157,37 +189,35 @@ void zapp_render() {
 
 			zcolor c = cmd->text.color;
 			COLORREF color = c.r | (c.g << 8) | (c.b << 16);
-			SetTextColor(memory_dc, color);
+			SetTextColor(app_ctx.memory_dc, color);
 
-			SetBkMode(memory_dc, TRANSPARENT);
-			SelectObject(memory_dc, ((GdiFont*)cmd->text.font)->handle);
-			ExtTextOutW(memory_dc, cmd->text.coord.x, cmd->text.coord.y, 0, NULL, wstr, wsize, NULL);
+			SetBkMode(app_ctx.memory_dc, TRANSPARENT);
+			SelectObject(app_ctx.memory_dc, ((GdiFont*)cmd->text.font)->handle);
+			ExtTextOutW(app_ctx.memory_dc, cmd->text.coord.x, cmd->text.coord.y, 0, NULL, wstr, wsize, NULL);
 		} break;
 		}
 	}
-	BitBlt(window_dc, 0, 0, 600, 400, memory_dc, 0, 0, SRCCOPY);
+	BitBlt(app_ctx.window_dc, 0, 0, app_ctx.width, app_ctx.height, app_ctx.memory_dc, 0, 0, SRCCOPY);
 }
 
 void zapp_launch(zapp_desc *description) {
 	GdiFont* font;
 
-	WNDCLASSW wc;
-	ATOM atom;
-	RECT rect = { 0, 0, description->width, description->height };
+	app_ctx.width = description->width;
+	app_ctx.height = description->height;
+	app_ctx.running = true;
+	RECT rect = { 0, 0, app_ctx.width, app_ctx.height };
 	DWORD style = WS_OVERLAPPEDWINDOW;
 	DWORD exstyle = WS_EX_APPWINDOW;
-	//HDC window_dc;
-	int running = 1;
 
-	/* Win32 */
-	memset(&wc, 0, sizeof(wc));
+	WNDCLASSW wc = { 0 };
 	wc.style = CS_DBLCLKS;
 	wc.lpfnWndProc = WindowProc;
 	wc.hInstance = GetModuleHandleW(0);
 	wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
 	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
 	wc.lpszClassName = L"ZappWindowClass";
-	atom = RegisterClassW(&wc);
+	ATOM atom = RegisterClassW(&wc);
 
 	i32 len = strlen(description->name) + 1;
 	i32 wsize = MultiByteToWideChar(CP_UTF8, 0, description->name, len, NULL, 0);
@@ -195,24 +225,24 @@ void zapp_launch(zapp_desc *description) {
 	MultiByteToWideChar(CP_UTF8, 0, description->name, len, title, wsize);
 
 	AdjustWindowRectEx(&rect, style, FALSE, exstyle);
-	wnd = CreateWindowExW(exstyle, wc.lpszClassName, title, style | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, NULL, NULL, wc.hInstance, NULL);
-	window_dc = GetDC(wnd);
+	app_ctx.wnd = CreateWindowExW(exstyle, wc.lpszClassName, title, style | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, NULL, NULL, wc.hInstance, NULL);
+	app_ctx.window_dc = GetDC(app_ctx.wnd);
 
-	HBITMAP bitmap = CreateCompatibleBitmap(window_dc, description->width, description->height);
-	memory_dc = CreateCompatibleDC(window_dc);
-	SelectObject(memory_dc, bitmap);
+	app_ctx.bitmap = CreateCompatibleBitmap(app_ctx.window_dc, description->width, description->height);
+	app_ctx.memory_dc = CreateCompatibleDC(app_ctx.window_dc);
+	SelectObject(app_ctx.memory_dc, app_ctx.bitmap);
 
 	i32 needs_refresh = 0;
 	zui_init();
 
 	description->init(description->user_data);
 	u32 prev_ts = GetTickCount();
-	while (running)
+	while (app_ctx.running)
 	{
 		MSG msg;
 		if (needs_refresh == 0) {
 			if (GetMessageW(&msg, NULL, 0, 0) <= 0)
-				running = 0;
+				app_ctx.running = false;
 			else {
 				TranslateMessage(&msg);
 				DispatchMessageW(&msg);
@@ -223,7 +253,7 @@ void zapp_launch(zapp_desc *description) {
 
 		while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
 			if (msg.message == WM_QUIT)
-				running = 0;
+				app_ctx.running = false;
 			TranslateMessage(&msg);
 			DispatchMessageW(&msg);
 			needs_refresh = 1;
@@ -237,7 +267,11 @@ void zapp_launch(zapp_desc *description) {
 	}
 	description->close(description->user_data);
 
-	ReleaseDC(wnd, window_dc);
+	ReleaseDC(app_ctx.wnd, app_ctx.window_dc);
 	UnregisterClassW(wc.lpszClassName, wc.hInstance);
+}
+
+void zapp_close() {
+	app_ctx.running = false;
 }
 

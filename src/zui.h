@@ -29,20 +29,20 @@ typedef struct zcolor { u8 r, g, b, a; } zcolor;
 typedef struct zvec2 { i32 x, y; } zvec2;
 typedef struct zrect { i32 x, y, w, h; } zrect;
 typedef struct zfont {
-	i32 id;
-	i32 bytes;
+    i32 id;
+    i32 bytes;
     zvec2 (*text_size)(struct zfont *font, char *str, i32 len);
 } zfont;
 
 typedef struct zapp_desc {
-	i32 width;
-	i32 height;
-	char *name;
-	void *user_data;
-	void *instance;
-	void(*init)(void *user_data);
-	void(*frame)(float ts, void *user_data);
-	void(*close)(void *user_data);
+    i32 width;
+    i32 height;
+    char *name;
+    void *user_data;
+    void *instance;
+    void(*init)(void *user_data);
+    void(*frame)(float ts, void *user_data);
+    void(*close)(void *user_data);
 } zapp_desc;
 i32 zapp_width();
 i32 zapp_height();
@@ -87,7 +87,7 @@ enum ZUI_WIDGETS {
     ZW_ROW,
     ZW_COL,
     ZW_BTN,
-	ZW_CHECK,
+    ZW_CHECK,
     ZW_TEXT,
     ZW_COMBO,
     ZW_GRID
@@ -107,8 +107,8 @@ enum ZUI_JUSTIFY {
 };
 
 enum ZUI_FLAGS {
-	// pressing tab can focus to this element
-	ZF_TABBABLE = 16
+    // pressing tab can focus to this element
+    ZF_TABBABLE = 16
 };
 
 typedef struct zcmd      { i32 id, bytes; } zcmd;

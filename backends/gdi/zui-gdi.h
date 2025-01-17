@@ -19,7 +19,7 @@ typedef struct zapp_gdi {
 static zapp_gdi app_ctx;
 
 
-static void zui_recv_clipboard(char *text, i32 len) {
+static void __zapp_recv_clipboard(char *text, i32 len) {
 	if (!OpenClipboard(0)) return;
 	do {
 		i32 wsize = MultiByteToWideChar(CP_UTF8, 0, text, len, 0, 0);
@@ -37,7 +37,7 @@ static void zui_recv_clipboard(char *text, i32 len) {
 	CloseClipboard();
 }
 
-static void zui_send_clipboard() {
+static void __zapp_send_clipboard() {
 	if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(0)) return;
 	do {
 		HGLOBAL mem = GetClipboardData(CF_UNICODETEXT);
@@ -59,7 +59,7 @@ static void zui_send_clipboard() {
 	CloseClipboard();
 }
 
-static LRESULT CALLBACK WindowProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
+static LRESULT CALLBACK __zapp_window_event(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	switch (msg)
 	{
@@ -87,8 +87,8 @@ static LRESULT CALLBACK WindowProc(HWND wnd, UINT msg, WPARAM wparam, LPARAM lpa
 	case WM_KEYDOWN: {
 		int ctrl = GetKeyState(VK_CONTROL) & (1 << 15);
 		switch (wparam) {
-		case 'C': if (ctrl) zui_input_copy(zui_recv_clipboard); return 0;
-		case 'V': if (ctrl) zui_send_clipboard(); return 0;
+		case 'C': if (ctrl) zui_input_copy(__zapp_recv_clipboard); return 0;
+		case 'V': if (ctrl) __zapp_send_clipboard(); return 0;
 		case 'A': if (ctrl) zui_input_select(); return 0;
 		case VK_TAB: zui_input_char('\t'); return 0;
 		case VK_BACK: zui_input_char('\b'); return 0;
@@ -212,7 +212,7 @@ void zapp_launch(zapp_desc *description) {
 
 	WNDCLASSW wc = { 0 };
 	wc.style = CS_DBLCLKS;
-	wc.lpfnWndProc = WindowProc;
+	wc.lpfnWndProc = __zapp_window_event;
 	wc.hInstance = GetModuleHandleW(0);
 	wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
 	wc.hCursor = LoadCursor(NULL, IDC_ARROW);

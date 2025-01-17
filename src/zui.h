@@ -1,8 +1,10 @@
 #include <stdbool.h>
 
+#ifndef TYPES_INCLUDED
+#define TYPES_INCLUDED
 typedef unsigned char u8;
 typedef unsigned short u16;
-typedef unsigned int u32;
+typedef unsigned long u32;
 typedef unsigned long long u64;
 
 typedef char i8;
@@ -12,6 +14,7 @@ typedef long long i64;
 
 typedef float f32;
 typedef double f64;
+#endif TYPES_INCLUDED
 
 #ifndef ZUI_INCLUDED
 #define ZUI_INCLUDED
@@ -31,17 +34,12 @@ typedef struct zfont {
     zvec2 (*text_size)(struct zfont *font, char *str, i32 len);
 } zfont;
 
-typedef struct zrenderer {
-	void (*render)(void *data);
-	void *data;
-} zrenderer;
-
-#ifdef ZAPP_DECLARE
 typedef struct zapp_desc {
 	i32 width;
 	i32 height;
 	char *name;
 	void *user_data;
+	void *instance;
 	void(*init)(void *user_data);
 	void(*frame)(float ts, void *user_data);
 	void(*close)(void *user_data);
@@ -52,7 +50,6 @@ void zapp_render();
 void zapp_close();
 zfont *zapp_font(char *name, i32 size);
 void zapp_launch(zapp_desc *description);
-#endif
 
 enum ZUI_KEYS {
     ZK_L_SHIFT = 1 << 0,
@@ -164,7 +161,7 @@ void zui_box();
 void zui_popup();
 
 // set justification
-void zui_justify(i32 justification);
+void zui_justify(u32 justification);
 
 // set next element size
 void zui_size(i32 w, i32 h);

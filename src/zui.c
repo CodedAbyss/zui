@@ -473,9 +473,9 @@ void zui_end() {
         __ui_draw(root);
 
 		// needed for most 2D drawing API's. Without a z-buffer, you must sort the draw calls
-		__zui_qsort(ctx->zdeque.data, ctx->zdeque.used / sizeof(u64));
+		__zui_qsort((u64*)ctx->zdeque.data, ctx->zdeque.used / sizeof(u64));
 
-		ctx->deque_reader = ctx->zdeque.data;
+		ctx->deque_reader = (u64*)ctx->zdeque.data;
 
         ctx->input.prev_mouse_pos = ctx->input.mouse_pos;
         ctx->input.prev_mouse_state = ctx->input.mouse_state;

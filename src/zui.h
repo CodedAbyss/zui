@@ -26,8 +26,8 @@ typedef double f64;
 #define ZV_FILL (zvec2) { Z_FILL, Z_FILL }
 
 typedef struct zcolor { u8 r, g, b, a; } zcolor;
-typedef struct zvec2 { i32 x, y; } zvec2;
-typedef struct zrect { i32 x, y, w, h; } zrect;
+typedef struct zvec2 { union { struct { i32 x, y; }; i32 e[2]; }; } zvec2;
+typedef struct zrect { union { struct { i32 x, y, w, h; }; i32 e[4]; }; } zrect;
 typedef struct zfont {
     i32 id;
     i32 bytes;

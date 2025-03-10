@@ -12,11 +12,11 @@
 #define _CRT_SECURE_NO_WARNINGS (1)
 #endif
 #include <stdlib.h>
-#include "sokol_gfx.h"
-#include "sokol_app.h"
-#include "sokol_log.h"
-#include "sokol_glue.h"
-#include "font.h"
+// #include "sokol_gfx.h"
+// #include "sokol_app.h"
+// #include "sokol_log.h"
+// #include "sokol_glue.h"
+//#include "font.h"
 #include "zui.h"
 #include "sokol_gl.h"
 #include "sokol_time.h"

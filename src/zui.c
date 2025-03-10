@@ -3,12 +3,13 @@
 #include <string.h>
 #include <stdio.h>
 
-// #define min(a, b) ((a) < (b) ? (a) : (b))
-// #define max(a, b) ((a) > (b) ? (a) : (b))
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#define max(a, b) ((a) > (b) ? (a) : (b))
 
 //#define assert(bool, msg) { if(!(bool)) printf(msg); exit(1); }
 #define FOR_CHILDREN(ui) for(zcmd_widget* child = __ui_get_child((zcmd_widget*)ui); child != (zcmd_widget*)ui; child = __ui_next(child))
 #define FOR_SIBLINGS(ui, sibling) for(zcmd_widget* child = __ui_next((zcmd_widget*)sibling); child != (zcmd_widget*)ui; child = __ui_next(child))
+#define SWAP(type, a, b) { type tmp = a; a = b; b = tmp; }
 
 
 typedef struct zui_type {
@@ -951,76 +952,52 @@ static zvec2 __ui_sz_swap(zcmd_widget *ui, zvec2 bounds) {
 }
 
 static zvec2 __zui_layout_size(zcmd_layout *data, zvec2 bounds) {
-    zcmd_widget *child = __ui_get_child(&data->_);
-
     // minimum size of empty container is 0, 0
-    if(!child)
+    if(!__ui_has_child(&data->_))
         return (zvec2) { 0, 0 };
 
-    zvec2 (*ui_sz)(zcmd_widget *, zvec2);
-    i32 major = (data->count - 1), minor = 0;
-    i32 major_bound = 0, minor_bound = 0;
+    // We share logic between rows and columns by having an AXIS variable
+    // AXIS is x for ZW_ROW, y for ZW_COL
+    bool AXIS = data->_.id - ZW_ROW;
+    i32 i = 0, j = 0, end = data->count - 1;
+    i32 major_bound = bounds.e[AXIS];
+    i32 minor_bound = bounds.e[!AXIS];
+    i32 major = ctx->padding.e[AXIS] * end;
+    i32 minor = 0; 
 
-    // We share logic between rows and columns by swapping vectors
-    if(data->_.id == ZW_COL) {
-        ui_sz = &__ui_sz;
-        minor_bound = bounds.x;
-        major_bound = bounds.y;
-        major *= ctx->padding.y;
-    } else if(data->_.id == ZW_ROW) {
-        ui_sz = &__ui_sz_swap;
-        minor_bound = bounds.y;
-        major_bound = bounds.x;
-        major *= ctx->padding.x;
-    } else {
-        printf("Layout type %d unrecognized\n", data->_.id);
-        return (zvec2) { 0, 0 };
+    // temporary steal some scratch memory from the ctx->ui buffer
+    typedef struct { zcmd_widget *w; i32 idx; float sz; } cfg;
+    cfg *configs = __buf_alloc(&ctx->ui, sizeof(cfg) * data->count);
+    FOR_CHILDREN(&data->_) configs[j] = (cfg) { child, j, data->data[j] }, j++;
+    
+    // move percentages to end of list (calculate them last)
+    while(i < j) {
+        while((configs[i].sz < -1.0f || configs[i].sz >= -0.0f) && i < j) i++;
+        while((configs[j].sz >= -1.0f && configs[j].sz < -0.0f) && i < j) j--;
+        SWAP(cfg, configs[i], configs[j]);
     }
+    float total_percent = 0;
+    for(i = j; i < end; i++) total_percent += data->data[configs[i].idx];
 
-    // calculate autosized
-    zcmd_widget *iter = child;
-    for(i32 i = 0; i < data->count; i++, iter = __ui_next(iter)) {
-        if(data->data[i] != Z_AUTO) continue;
-        zvec2 child_sz = ui_sz(iter, (zvec2) { minor_bound, Z_AUTO });
-        minor = max(minor, child_sz.x);
-        major += child_sz.y;
+    zvec2 child_bounds;
+    child_bounds.e[!AXIS] = minor_bound;
+    i32 pixels_total = 0;
+    for(i = 0; i < end; i++) {
+        float f = data->data[configs[i].idx];
+        i32 bound = data->data[i];
+        if(i >= j) {
+            bound = (i32)((major_bound - major) * f / total_percent + 0.5f);
+            total_percent -= f;
+        }
+        child_bounds.e[AXIS] = bound;
+        zvec2 child_sz = __ui_sz(configs->w, child_bounds);
+        minor = max(minor, child_sz.e[!AXIS]);
+        major += bound == Z_AUTO ? child_sz.e[AXIS] : bound;
     }
-
-    // calculate pixels
-    iter = child;
-    float percent_total = 0;
-    for(i32 i = 0; i < data->count; i++, iter = __ui_next(iter)) {
-        float f = data->data[i];
-        if(f >= -1.0f && f < 0.0f)
-            percent_total += f;
-        if(f < 0.0f) continue;
-        i32 pixels = (i32)f;
-        zvec2 child_sz = ui_sz(iter, (zvec2) { minor_bound, pixels });
-        minor = max(minor, child_sz.x);
-        major += pixels;
-    }
-
-    i32 pixels_so_far = major;
-
-    // calculate percentage
-    iter = child;
-    for(i32 i = 0; i < data->count; i++, iter = __ui_next(iter)) {
-        float f = data->data[i];
-        if(f < -1.0f || f > -0.0f) continue;
-        i32 height = (i32)((major_bound - pixels_so_far) * f / percent_total + 0.5f);
-        zvec2 child_sz = ui_sz(iter, (zvec2) { minor_bound, height });
-        minor = max(minor, child_sz.x);
-        major += height;
-    }
-    if(data->_.id == ZW_ROW) {
-        FOR_CHILDREN(data)
-            child->bounds.h = minor;
-        return __ui_sz_auto(bounds, (zvec2) { major, minor });
-    } else {
-        FOR_CHILDREN(data)
-            child->bounds.w = minor;
-        return __ui_sz_auto(bounds, (zvec2) { minor, major });
-    }
+    __buf_pop(&ctx->ui, sizeof(cfg) * data->count);
+    if(bounds.e[AXIS] == Z_AUTO) bounds.e[AXIS] = major;
+    if(bounds.e[!AXIS] == Z_AUTO) bounds.e[!AXIS] = minor;
+    return bounds;
 }
 
 static void __zui_layout_pos(zcmd_layout *data, zvec2 pos, i32 zindex) {

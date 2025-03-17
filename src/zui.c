@@ -37,133 +37,175 @@ static void *__buf_alloc(zui_buf *l, i32 size) {
     l->used += size;
     return ret;
 }
+static bool __buf_read(zui_buf *l, i32 element_size, i32 index, void **ptr) {
+    i32 diff = l->used - element_size * (index + 1);
+    if (diff > 0) {
+        *ptr = __buf_alloc(l, diff);
+        return true;
+    }
+    *ptr = l->data + element_size * index;
+    return false;
+}
 static void *__buf_pop(zui_buf *l, i32 size) {
     l->used -= size;
     return l->data + l->used;
 }
 
+// naive map implementation
+typedef struct zmap {
+    u32 cap;
+    u32 used;
+    u64 *buf; // layout: <1 bit if slot occupied><31 bits of value><32 bits for key>
+} zmap;
+void zmap_init(zmap *map) {
+    map->used = 0;
+    map->cap = 16;
+    map->buf = calloc(map->cap, sizeof(u64));
+}
+u64 *zmap_node(zmap *map, u32 key) {
+    i32 index = key % map->cap;
+    while ((map->buf[index] & (1ull << 63)) && (u32)map->buf[index] != key)
+        index = (index + 1) % map->cap;
+    return &map->buf[index];
+}
+i32 zmap_get(zmap *map, u32 key) {
+    u64 *node = zmap_node(map, key);
+    if (*node & (1ull << 63)) return ((*node) >> 32) & ~(1u << 31);
+    return -1;
+}
+void zmap_set(zmap *map, u32 key, u32 value) {
+    if (map->used * 4 > map->cap * 3) { // rehash
+        u64 *old = map->buf;
+        map->cap *= 2;
+        map->used = 0;
+        map->buf = calloc(map->cap, sizeof(u64));
+        for (i32 i = 0; i < map->cap / 2; i++)
+            if (old[i] & (1ull << 63))
+                zmap_set(map, (u32)old[i], (old[i] >> 32) & ~(1u << 31));
+        free(old);
+    }
+    u64 *node = zmap_node(map, key);
+    if (~*node & (1ull << 63)) map->used++;
+    *node = (1ull << 63) | ((u64)value << 32) | key;
+}
+
 typedef struct zui_client {
-	zvec2 window_sz;
-	zvec2 mouse_pos;
-	u16 mouse_state;
-	u16 modifiers;
-	u16 font_cnt;
-	zui_client_fn send;
-	zui_server_fn recv;
-	void *user_data;
-	zui_buf commands;
-	zui_buf knownGlyphs;
+    zvec2 window_sz;
+    zvec2 mouse_pos;
+    u16 mouse_state;
+    u16 modifiers;
+    u16 font_cnt;
+    zui_client_fn send;
+    zui_render_fn recv;
+    void *user_data;
+    zui_buf commands;
+    zui_buf glyph_maps;
 } zui_client;
 
 static zui_client *client;
 
-void zui_client_init(zui_client_fn send, zui_server_fn recv, void *user_data) {
-	static zui_client global_client = { 0 };
-	client = &global_client;
-	client->send = send;
-	client->recv = recv;
-	client->user_data = user_data;
-	__buf_init(&client->knownGlyphs, 256);
+void zui_client_init(zui_client_fn send, zui_render_fn recv, void *user_data) {
+    static zui_client global_client = { 0 };
+    client = &global_client;
+    client->send = send;
+    client->recv = recv;
+    client->user_data = user_data;
+    __buf_init(&client->glyph_maps, sizeof(zmap));
 }
 
-void zui_client_process(char *bytes, i32 len) {
-	if (len < sizeof(zcmd)) return;
-	zcmd *cmd = (zcmd*)bytes;
-	if (cmd->bytes > len) return;	
-	// draw commands are pushed to the command stack
-	if (cmd->id >= ZSCMD_CLIP && cmd->id <= ZSCMD_TEXT) {
-		void *ptr = __buf_alloc(&client->commands, cmd->bytes);
-		memcpy(ptr, cmd, cmd->bytes);
-	}
-	// non-draw commands are executed immediately
-	else {
-		client->recv(cmd, client->user_data);
-	}
-	zui_client_process(bytes + cmd->bytes, len - cmd->bytes);
+void zui_client_push(zscmd *cmd) {
+    if (cmd->base.id >= ZSCMD_CLIP && cmd->base.id <= ZSCMD_TEXT) // draw commands are pushed to the draw stack
+        memcpy(__buf_alloc(&client->commands, cmd->base.bytes), cmd, cmd->base.bytes);
+    else // non-draw commands are executed immediately
+        client->recv(cmd, client->user_data);
+}
+
+void zui_client_push_raw(char *bytes, i32 len) {
+    if (len < sizeof(zcmd)) return;
+    zscmd *cmd = (zscmd*)bytes;
+    if (cmd->base.bytes > len) return;
+    zui_client_push((zscmd*)cmd);
+    zui_client_push_raw(bytes + cmd->base.bytes, len - cmd->base.bytes);
 }
 
 void zui_client_render() {
-	char *ptr = client->commands.data;
-	char *end = client->commands.data + client->commands.used;
-	while (ptr < end) {
-		zscmd *cmd = (zscmd*)ptr;
-		client->recv(cmd, client->user_data);
-		ptr += cmd->base.bytes;
-	}	
+    char *ptr = client->commands.data;
+    char *end = ptr + client->commands.used;
+    while (ptr < end) {
+        zscmd *cmd = (zscmd*)ptr;
+        client->recv(cmd, client->user_data);
+        ptr += cmd->base.bytes;
+    }    
 }
 
 void __zui_send_mouse_data() {
-	zccmd_mouse data = {
-		.header = { ZCCMD_MOUSE, sizeof(zccmd_mouse) },
-		.pos = client->mouse_pos,
-		.state = client->mouse_state
-	};
-	client->send(&data, client->user_data);
+    zccmd_mouse data = {
+        .header = { ZCCMD_MOUSE, sizeof(zccmd_mouse) },
+        .pos = client->mouse_pos,
+        .state = client->mouse_state
+    };
+    client->send(&data, client->user_data);
 }
 
 void zui_mouse_down(u16 btn) {
-	client->mouse_state |= btn;
-	__zui_send_mouse_data();
+    client->mouse_state |= btn;
+    __zui_send_mouse_data();
 }
 void zui_mouse_up(u16 btn) { client->mouse_state &= ~btn; __zui_send_mouse_data(); }
 void zui_mouse_move(zvec2 pos) { client->mouse_pos = pos; __zui_send_mouse_data(); }
-void zui_key_char(char c) {
-	c &= 0x7f;
-	u8 mask = (1 << (c & 7));
-	// send glyph info for all fonts
-	for (u16 id = 0; id < client->font_cnt; id++) {
-		u8 *byte = &client->knownGlyphs.data[c / 8 + id * 16];
-		if (*byte & mask) continue;
-		*byte |= mask;
-		zscmd_glyph glyph = {
-			.header = { ZSCMD_GLYPH, sizeof(zscmd_glyph) },
-			.c = (zglyph_data) {
-				.font_id = 0,
-				.c = c,
-				.width = 0
-			}
-		};
-		client->recv((zscmd*)&glyph, client->user_data);
-		glyph.header.id = ZCCMD_GLYPH;
-		client->send((zccmd*)&glyph, client->user_data);
-	}
-	zccmd_keys key = {
-		.header = { ZCCMD_KEYS, sizeof(zccmd_keys) },
-		.modifiers = client->modifiers,
-		.key = c
-	};
-	client->send((zccmd*)&key, client->user_data);
+void zui_key_char(u32 c) {
+    // send glyph info for all fonts
+    for (u16 id = 0; id < client->font_cnt; id++) {
+        zmap *map = (zmap*)client->glyph_maps.data + id;
+        if (zmap_get(map, c) == -1) continue;
+        zscmd_glyph glyph = {
+            .header = { ZSCMD_GLYPH, sizeof(zscmd_glyph) },
+            .c = (zglyph_data) {
+                .font_id = 0,
+                .c = c,
+                .width = 0
+            }
+        };
+        client->recv((zscmd*)&glyph, client->user_data);
+        glyph.header.id = ZCCMD_GLYPH;
+        zmap_set(map, c, glyph.c.width);
+        client->send((zccmd*)&glyph, client->user_data);
+    }
+    zccmd_keys key = {
+        .header = { ZCCMD_KEYS, sizeof(zccmd_keys) },
+        .modifiers = client->modifiers,
+        .key = c
+    };
+    client->send((zccmd*)&key, client->user_data);
 }
 
 void zui_resize(u16 width, u16 height) {
-	if (width == client->window_sz.x && height == client->window_sz.y) return;
-	client->window_sz = (zvec2) { width, height };
-	zccmd_win win = {
-		.header = { ZCCMD_WIN, sizeof(zccmd_win) },
-		.sz = client->window_sz
-	};
-	client->send(&win, client->user_data);
+    if (width == client->window_sz.x && height == client->window_sz.y) return;
+    client->window_sz = (zvec2) { width, height };
+    zccmd_win win = {
+        .header = { ZCCMD_WIN, sizeof(zccmd_win) },
+        .sz = client->window_sz
+    };
+    client->send(&win, client->user_data);
 }
 
 typedef struct zui_ctx {
-    i32 width, height;
-    zui_server_fn send;
+    zvec2 window_sz;
+    zui_render_fn renderer;
     zui_client_fn recv;
     void *user_data;
     zvec2 padding;
     zfont *font;
     zvec2 next_size;
     u32 flags;
+    u32 font_cnt;
     i32 container;
     zui_buf registry;
     zui_buf ui;
     zui_buf draw;
     zui_buf stack;
     zui_buf zdeque;
-    union {
-        u8 *cmd_reader;
-        u64 *deque_reader;
-    };
+    zui_buf glyph_maps;
     i32 __focused; // used for calculating focused
     i32 focused;
     i32 hovered;
@@ -200,8 +242,8 @@ static void *__cont_alloc(i32 id, i32 size) {
 static void *__draw_alloc(u16 id, u16 size, i32 zindex) {
     u64 *index = __buf_alloc(&ctx->zdeque, sizeof(u64));
     zscmd *ret = (zscmd*)__buf_alloc(&ctx->draw, size);
-	ret->base.id = id;
-	ret->base.bytes = size;
+    ret->base.id = id;
+    ret->base.bytes = size;
     // high bytes represent z-index, low bits are index into the pointer
     // we can sort this deque as 64 bit integers, while will sort zindex first, and then by insertion order
     *index = ((u64)zindex << 32) | ((u8*)ret - ctx->draw.data);
@@ -215,19 +257,19 @@ static zrect __rect_add(zrect a, zrect b) {
 }
 static void __push_rect_cmd(zrect rect, zcolor color, i32 zindex) {
     zscmd_rect *r = __draw_alloc(ZSCMD_RECT, sizeof(zscmd_rect), zindex);
-	r->rect = rect;
-	r->color = color;
+    r->rect = rect;
+    r->color = color;
 }
 static void __push_clip_cmd(zrect rect, i32 zindex) {
     zscmd_clip *r = __draw_alloc(ZSCMD_CLIP, sizeof(zscmd_clip), zindex);
-	r->rect = rect;
+    r->rect = rect;
 }
 static void __push_text_cmd(zfont *font, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex) {
     zscmd_text *r = __draw_alloc(ZSCMD_TEXT, sizeof(zscmd_text) + len, zindex);
-	r->font_id = 0;
-	r->pos = coord;
-	r->color = color;
-	memcpy(r->text, text, len);
+    r->font_id = 0;
+    r->pos = coord;
+    r->color = color;
+    memcpy(r->text, text, len);
 }
 static zvec2 __vec_swap(zvec2 v) {
     return (zvec2) { v.y, v.x };
@@ -303,10 +345,10 @@ zcmd_widget *__ui_find_with_flag(zcmd_widget *start, u32 flags) {
     return 0;
 }
 bool __ui_has_child(zcmd_widget *ui) {
-	return (ui->flags & ZF_PARENT) > 0;
+    return (ui->flags & ZF_PARENT) > 0;
 }
 zcmd_widget *__ui_get_child(zcmd_widget *ui) {
-	if (~ui->flags & ZF_PARENT) return 0;
+    if (~ui->flags & ZF_PARENT) return 0;
     void *next = (ctx->ui.data + ui->next);
     zcmd_widget *ret = (zcmd_widget*)((u8*)ui + ui->bytes);
     return ret;
@@ -421,77 +463,52 @@ void zui_input_char(char c) {
 }
 
 void __ui_print(zcmd_widget *cmd, int indent) {
-	zapp_log("%04x | ", __ui_index(cmd));
-	for (i32 i = 0; i < indent; i++)
-		zapp_log("    ");
-	switch (cmd->id) {
-	//case ZW_BOX: {
-	//	zcmd_box *b = (zcmd_box*)cmd;
-	//	zapp_log("(ZW_BOX, next: %04x)\n", b->_.next);
-	//} break;
-	//case ZW_LABEL: {
-	//	zcmd_label *j = (zcmd_label*)cmd;
-	//	zapp_log("(ZW_LABEL, next: %04x, text: %s)\n", j->_.next, j->text);
-	//} break;
-	//case ZW_ROW:
-	//case ZW_COL: {
-	//	zcmd_layout *l = (zcmd_layout*)cmd;
-	//	zapp_log("(%s, next: %04x, layout: [", l->_.id == ZW_COL ? "ZW_COL" : "ZW_ROW", l->_.next);
-	//	for (i32 i = 0; i < l->count; i++) {
-	//		if (l->data[i] >= 0)
-	//			zapp_log("%dpx", (i32)l->data[i]);
-	//		else if (l->data[i] == Z_AUTO)
-	//			zapp_log("AUTO");
-	//		else if (l->data[i] >= -1.0f && l->data[i] < 0.0f)
-	//			zapp_log("%d%%", (i32)(-l->data[i] * 100 + 0.5f));
-	//		else
-	//			zapp_log("ERR");
-	//		if (i != l->count - 1)
-	//			zapp_log(", ");
-	//	}
-	//	zapp_log("])\n");
-	//} break;
-	default: {
-		zrect b = cmd->bounds;
-		zrect u = cmd->used;
-		zapp_log("(id: %d, next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", cmd->id, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
-	}
-	}
-	if (__ui_has_child(cmd)) {
-		FOR_CHILDREN(cmd) {
-			__ui_print(child, indent + 1);
-		}
-	}
-}
-
-
-void zui_server_init(zui_server_fn send, zui_client_fn recv) {
-
-}
-
-static void __zui_default_client(zccmd *input) {
-
-}
-
-static void __zui_push_client(zscmd *cmd) {
-	if (cmd->base.id >= ZSCMD_CLIP && cmd->base.id <= ZSCMD_TEXT) {
-		void *ptr = __buf_alloc(&client->commands, cmd->base.bytes);
-		memcpy(ptr, cmd, cmd->base.bytes);
-	}
-	// non-draw commands are executed immediately
-	else {
-		client->recv(cmd, client->user_data);
-	}
-}
-
-void zui_init(zui_server_fn renderer, void *userdata) {
-	zui_client_init(__zui_default_client, renderer, userdata);
-	zui_server_init(__zui_push_client, __zui_default_client, userdata);
+    zapp_log("%04x | ", __ui_index(cmd));
+    for (i32 i = 0; i < indent; i++)
+        zapp_log("    ");
+    switch (cmd->id) {
+    //case ZW_BOX: {
+    //    zcmd_box *b = (zcmd_box*)cmd;
+    //    zapp_log("(ZW_BOX, next: %04x)\n", b->_.next);
+    //} break;
+    //case ZW_LABEL: {
+    //    zcmd_label *j = (zcmd_label*)cmd;
+    //    zapp_log("(ZW_LABEL, next: %04x, text: %s)\n", j->_.next, j->text);
+    //} break;
+    //case ZW_ROW:
+    //case ZW_COL: {
+    //    zcmd_layout *l = (zcmd_layout*)cmd;
+    //    zapp_log("(%s, next: %04x, layout: [", l->_.id == ZW_COL ? "ZW_COL" : "ZW_ROW", l->_.next);
+    //    for (i32 i = 0; i < l->count; i++) {
+    //        if (l->data[i] >= 0)
+    //            zapp_log("%dpx", (i32)l->data[i]);
+    //        else if (l->data[i] == Z_AUTO)
+    //            zapp_log("AUTO");
+    //        else if (l->data[i] >= -1.0f && l->data[i] < 0.0f)
+    //            zapp_log("%d%%", (i32)(-l->data[i] * 100 + 0.5f));
+    //        else
+    //            zapp_log("ERR");
+    //        if (i != l->count - 1)
+    //            zapp_log(", ");
+    //    }
+    //    zapp_log("])\n");
+    //} break;
+    default: {
+        zrect b = cmd->bounds;
+        zrect u = cmd->used;
+        zapp_log("(id: %d, next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", cmd->id, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
+    }
+    }
+    if (__ui_has_child(cmd)) {
+        FOR_CHILDREN(cmd) {
+            __ui_print(child, indent + 1);
+        }
+    }
 }
 
 void zui_print_tree() {
-	zapp_log("printing tree...\n");
-	__ui_print((zcmd_widget*)ctx->ui.data, 0);
+    zapp_log("printing tree...\n");
+    __ui_print((zcmd_widget*)ctx->ui.data, 0);
 }
 
 void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb) {
@@ -519,7 +536,7 @@ void __zui_qsort(u64 *nums, i32 count) {
         while (nums[i] <= pivot && i < j) i++;
         while (nums[j] > pivot && i < j) j--;
         if (j <= i) i = 0;
-		SWAP(u64, nums[i], nums[j]);
+        SWAP(u64, nums[i], nums[j]);
     } while (i);
     __zui_qsort(nums, j++);
     __zui_qsort(nums + j, count - j);
@@ -535,35 +552,66 @@ void zui_end() {
     if (ctx->container != ctx->ui.used) { 
         __ui_widget(ctx->container)->flags |= ZF_PARENT;
     }
-    // window was ended, calculate sizes and generate draw commands
-    if(ctx->stack.used == 0) {
-        ((zcmd_widget*)ctx->ui.data)->next = 0;
+}
 
-        ctx->next_size = (zvec2) { Z_FILL, Z_FILL };
-        zcmd_widget *root = __ui_widget(0);
-        __ui_sz(root, (zvec2) { ctx->width, ctx->height });
-        root->bounds.x = 0;
-        root->bounds.y = 0;
+void zui_render() {
+    if (ctx->stack.used != 0)
+        return;
 
-        ctx->hovered = 0;
-        __ui_pos(root, (zvec2) { 0, 0 }, 0);
-        if (ctx->__focused) {
-            ctx->focused = ctx->__focused;
-            ctx->__focused = 0;
-        }
-	
-        __ui_draw(root);
+    // calculate sizes
+    ctx->next_size = (zvec2) { Z_FILL, Z_FILL };
+    zcmd_widget *root = __ui_widget(0);
+    root->next = 0;
+    root->bounds.x = 0;
+    root->bounds.y = 0;
+    __ui_sz(root, ctx->window_sz);
 
-        // needed for most 2D drawing API's. Without a z-buffer, you must sort the draw calls
-        __zui_qsort((u64*)ctx->zdeque.data, ctx->zdeque.used / sizeof(u64));
+    // calculate positions
+    ctx->hovered = 0;
+    __ui_pos(root, (zvec2) { 0, 0 }, 0);
+    if (ctx->__focused) {
+        ctx->focused = ctx->__focused;
+        ctx->__focused = 0;
+    }
 
-        ctx->deque_reader = (u64*)ctx->zdeque.data;
+    // generate draw commands
+    __ui_draw(root);
 
-        ctx->input.prev_mouse_pos = ctx->input.mouse_pos;
-        ctx->input.prev_mouse_state = ctx->input.mouse_state;
-        ctx->input.text.used = 0;
-        //ctx->input.clipboard = 0;
-        //ctx->input.ctrl_a = false;
+    // sort draw commands by zindex / index (order of creation)
+    // despite qsort not being a stable sort, the order of draw cmd creation is preserved due to index being part of each u64
+    __zui_qsort((u64*)ctx->zdeque.data, ctx->zdeque.used / sizeof(u64));
+    u64 *deque_reader = (u64*)ctx->zdeque.data;
+    while(deque_reader < (u64*)(ctx->zdeque.data + ctx->zdeque.used)) {
+        u64 next_pair = *deque_reader++;
+        i32 index = next_pair & 0x7FFFFFFF;
+        zscmd *next = (zscmd*)(ctx->draw.data + index);
+        ctx->renderer(next, ctx->user_data);
+    }
+    ctx->input.prev_mouse_pos = ctx->input.mouse_pos;
+    ctx->input.prev_mouse_state = ctx->input.mouse_state;
+    ctx->input.text.used = 0;
+    ctx->zdeque.used = 0;
+    ctx->draw.used = 0;
+}
+
+void zui_push(zccmd *cmd) {
+    switch (cmd->base.id) {
+    case ZCCMD_MOUSE: 
+        ctx->input.mouse_pos = cmd->mouse.pos;
+        ctx->input.mouse_state = cmd->mouse.state;
+        break;
+    case ZCCMD_KEYS:
+        *(char*)__buf_alloc(&ctx->input.text, 1) = cmd->keys.key;
+        break;
+    case ZCCMD_GLYPH: {
+        zmap *map;
+        if (__buf_read(&ctx->glyph_maps, sizeof(zmap), cmd->glyph.c.font_id, &map))
+            zmap_init(map);
+        zmap_set(map, cmd->glyph.c.c, cmd->glyph.c.width);
+    } break;
+    case ZCCMD_WIN:
+        ctx->window_sz = cmd->win.sz;
+        break;
     }
 }
 
@@ -618,8 +666,7 @@ static void __zui_popup_draw(zcmd_box *box) {
 
 void zui_window(i32 width, i32 height, float dt) {
     ctx->ui.used = 0;
-    ctx->width = width;
-    ctx->height = height;
+    ctx->window_sz = (zvec2) { width, height };
     ctx->flags = 0;
     float ms = dt * 1000.0f + ctx->time.delta;
     u32 new_ms = (u32)ms;
@@ -891,8 +938,6 @@ static void __zui_text_draw(zcmd_text *data) {
             char c = ((char*)ctx->input.text.data)[i];
             if (c == 9) { // on tab, switch focus to next tabbable element
                 zcmd_widget *w = __ui_find_with_flag(&data->_, ZF_TABBABLE);
-                if (w)
-                    zapp_log("focusing %d\n", __ui_index(w));
                 __ui_schedule_focus(w);
                 break;
             }
@@ -1024,11 +1069,11 @@ void zui_row(i32 n, float *heights) {
 }
 
 static void __zui_layout_draw(zcmd_layout *data) {
-	i32 i = 0;
-	FOR_CHILDREN(data) {
-		__ui_draw(child);
-		i++;
-	}
+    i32 i = 0;
+    FOR_CHILDREN(data) {
+        __ui_draw(child);
+        i++;
+    }
 }
 
 static zvec2 __zui_layout_size(zcmd_layout *data, zvec2 bounds) {
@@ -1050,13 +1095,13 @@ static zvec2 __zui_layout_size(zcmd_layout *data, zvec2 bounds) {
     cfg *configs = __buf_alloc(&ctx->draw, sizeof(cfg) * data->count);
     __buf_pop(&ctx->draw, sizeof(cfg) * data->count);
 
-	FOR_CHILDREN(&data->_) configs[j] = (cfg) { child, j, data->data[j] }, j++;
+    FOR_CHILDREN(&data->_) configs[j] = (cfg) { child, j, data->data[j] }, j++;
     
     // move percentages to end of list (calculate them last)
     while(i < j) {
         while((configs[i].sz < -1.0f || configs[i].sz >= -0.0f) && i < j) i++;
-		if (i >= j) break;
-		do j--; while ((configs[j].sz >= -1.0f && configs[j].sz < -0.0f) && i < j);
+        if (i >= j) break;
+        do j--; while ((configs[j].sz >= -1.0f && configs[j].sz < -0.0f) && i < j);
         SWAP(cfg, configs[i], configs[j]);
     }
     float total_percent = 0;
@@ -1067,7 +1112,7 @@ static zvec2 __zui_layout_size(zcmd_layout *data, zvec2 bounds) {
     i32 pixels_total = 0;
     for(i = 0; i < end; i++) {
         float f = data->data[configs[i].idx];
-		i32 bound = (i32)f;
+        i32 bound = (i32)f;
         if(i >= j) {
             bound = (i32)((major_bound - major) * f / total_percent + 0.5f);
             total_percent -= f;
@@ -1077,7 +1122,7 @@ static zvec2 __zui_layout_size(zcmd_layout *data, zvec2 bounds) {
         minor = max(minor, child_sz.e[!AXIS]);
         major += bound == Z_AUTO ? child_sz.e[AXIS] : bound;
     }
-	FOR_CHILDREN(data) child->bounds.e[2 + !AXIS] = minor;
+    FOR_CHILDREN(data) child->bounds.e[2 + !AXIS] = minor;
     bounds.e[AXIS] = major;
     bounds.e[!AXIS] = minor;
     return bounds;
@@ -1114,14 +1159,17 @@ void zui_grid(i32 rows, i32 cols, float *row_col_settings) {
 //
 // }
 
-void zui_init() {
+void zui_init(zui_render_fn fn, void *user_data) {
     static zui_ctx global_ctx = { 0 };
+    global_ctx.renderer = fn;
+    global_ctx.user_data = user_data;
     __buf_init(&global_ctx.draw, 256);
     __buf_init(&global_ctx.ui, 256);
     __buf_init(&global_ctx.registry, 256);
     __buf_init(&global_ctx.stack, 256);
     __buf_init(&global_ctx.zdeque, 256);
     __buf_init(&global_ctx.input.text, 256);
+    __buf_init(&global_ctx.glyph_maps, 256);
     global_ctx.padding = (zvec2) { 5, 5 };
     global_ctx.next_size = (zvec2) { Z_NONE, Z_NONE };
     global_ctx.container = 0;
@@ -1146,5 +1194,6 @@ void zui_close() {
     free(ctx->stack.data);
     free(ctx->zdeque.data);
     free(ctx->input.text.data);
+    free(ctx->glyph_maps.data);
     ctx = 0;
 }

@@ -32,11 +32,11 @@ extern "C" {
 typedef struct zcolor { u8 r, g, b, a; } zcolor;
 typedef struct zvec2 { union { struct { u16 x, y; }; u16 e[2]; }; } zvec2;
 typedef struct zrect { union { struct { u16 x, y, w, h; }; u16 e[4]; }; } zrect;
-typedef struct zfont {
-    i32 id;
-    i32 bytes;
-    zvec2 (*text_size)(struct zfont *font, char *str, i32 len);
-} zfont;
+//typedef struct zfont {
+//    i32 id;
+//    i32 bytes;
+//    zvec2 (*text_size)(struct zfont *font, char *str, i32 len);
+//} zfont;
 
 //typedef struct zapp_desc {
 //    i32 width;
@@ -118,7 +118,7 @@ enum ZUI_SERVER_CMDS {
     ZSCMD_GLYPH,
 };
 
-typedef struct zglyph_data { u16 font_id; u16 width; u32 c; } zglyph_data;
+typedef struct zglyph_data { u16 font_id; u16 width; i32 c; } zglyph_data;
 typedef struct zscmd_clip { zcmd header; zrect rect; } zscmd_clip;                                          // set clip rect
 typedef struct zscmd_rect { zcmd header; zrect rect; zcolor color; } zscmd_rect;                            // draw rect
 typedef struct zscmd_text { zcmd header; zvec2 pos;  zcolor color; u16 font_id; char text[0]; } zscmd_text; // draw text
@@ -143,16 +143,18 @@ enum ZUI_CLIENT_CMDS {
     ZCCMD_WIN
 };
 
-typedef struct zccmd_mouse { zcmd header; zvec2 pos; u16 state; } zccmd_mouse;      // mouse movement / state
+typedef struct zccmd_mouse { zcmd header; zvec2 pos; u16 state; } zccmd_mouse;     // mouse movement / state
 typedef struct zccmd_keys { zcmd header; u32 key; u16 modifiers; } zccmd_keys;     // key presses
-typedef struct zccmd_glyph { zcmd header; zglyph_data c; } zccmd_glyph;             // sent every time a new glyph needs to be displayed
-typedef struct zccmd_win { zcmd header; zvec2 sz; } zccmd_win;                      // new window size
+typedef struct zccmd_glyph { zcmd header; zglyph_data c; } zccmd_glyph;            // sent every time a new glyph needs to be displayed
+typedef struct zccmd_win { zcmd header; zvec2 sz; } zccmd_win;                     // new window size
+typedef struct zccmd_stat { zcmd header; u32 status; } zccmd_stat;                 // response to server command 
 typedef union zccmd {
     zcmd        base;
     zccmd_mouse mouse;
     zccmd_keys  keys;
     zccmd_glyph glyph;
     zccmd_win   win;
+    zccmd_stat  status;
 } zccmd;
 
 typedef struct zcmd_widget { u16 id, bytes; i32 next, zindex, flags; zrect bounds; zrect used; } zcmd_widget;
@@ -180,7 +182,7 @@ void zui_client_render();
 void zui_mouse_down(u16 btn);
 void zui_mouse_up(u16 btn);
 void zui_mouse_move(zvec2 pos);
-void zui_key_char(u32 c);
+void zui_key_char(i32 c);
 void zui_resize(u16 width, u16 height);
 
 // SERVER COMMANDS
@@ -196,8 +198,11 @@ void zui_blank();
 void zui_box();
 void zui_popup();
 void zui_justify(u32 justification);
-void zui_size(i32 w, i32 h);
-void zui_font(zfont *font);
+//void zui_size(i32 w, i32 h);
+u16  zui_new_font(char *family, i32 size);
+zvec2 zui_text_sz(u16 id, char *text, i32 len);
+void zui_font(u16 id);
+
 void zui_end();
 void zui_window(i32 width, i32 height, float ts);
 void zui_label(const char *text);

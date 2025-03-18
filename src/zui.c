@@ -37,56 +37,97 @@ static void *__buf_alloc(zui_buf *l, i32 size) {
     l->used += size;
     return ret;
 }
-static bool __buf_read(zui_buf *l, i32 element_size, i32 index, void **ptr) {
-    i32 diff = l->used - element_size * (index + 1);
-    if (diff > 0) {
-        *ptr = __buf_alloc(l, diff);
-        return true;
-    }
-    *ptr = l->data + element_size * index;
-    return false;
-}
 static void *__buf_pop(zui_buf *l, i32 size) {
     l->used -= size;
     return l->data + l->used;
 }
 
 // naive map implementation
-typedef struct zmap {
+typedef struct zglyphcache {
     u32 cap;
     u32 used;
-    u64 *buf; // layout: <1 bit if slot occupied><31 bits of value><32 bits for key>
-} zmap;
-void zmap_init(zmap *map) {
+    u64 *data; // layout: <1 bit if slot occupied><31 bits of value><32 bits for key>
+} zglyphcache;
+static void __zgc_init(zglyphcache *map) {
     map->used = 0;
     map->cap = 16;
-    map->buf = calloc(map->cap, sizeof(u64));
+    map->data = calloc(map->cap, sizeof(u64));
 }
-u64 *zmap_node(zmap *map, u32 key) {
+static u32 __zgc_hash(u16 font_id, i32 codepoint) {
+    // code point must be under U+10FFFF so we can include the font_id in the key
+    u32 key = (font_id << 21) | (codepoint & 0x1FFFFF);
+    // shuffle bits so we don't have to deal with collisions from different fonts as much
+    key = ((key >> 16) ^ key) * 0x45d9f3b;
+    key = ((key >> 16) ^ key) * 0x45d9f3b;
+    return (key >> 16) ^ key;
+}
+static u64 *__zgc_node(zglyphcache *map, u32 key) {
     i32 index = key % map->cap;
-    while ((map->buf[index] & (1ull << 63)) && (u32)map->buf[index] != key)
+    while ((map->data[index] & (1ull << 63)) && (u32)map->data[index] != key)
         index = (index + 1) % map->cap;
-    return &map->buf[index];
+    return &map->data[index];
 }
-i32 zmap_get(zmap *map, u32 key) {
-    u64 *node = zmap_node(map, key);
+static i32 __zgc_get(zglyphcache *map, u16 font_id, i32 codepoint) {
+    u64 *node = __zgc_node(map, __zgc_hash(font_id, codepoint));
     if (*node & (1ull << 63)) return ((*node) >> 32) & ~(1u << 31);
     return -1;
 }
-void zmap_set(zmap *map, u32 key, u32 value) {
+static void __zgc_set(zglyphcache *map, u16 font_id, i32 codepoint, i32 value) {
     if (map->used * 4 > map->cap * 3) { // rehash
-        u64 *old = map->buf;
+        u64 *old = map->data;
         map->cap *= 2;
-        map->used = 0;
-        map->buf = calloc(map->cap, sizeof(u64));
+        map->data = calloc(map->cap, sizeof(u64));
         for (i32 i = 0; i < map->cap / 2; i++)
             if (old[i] & (1ull << 63))
-                zmap_set(map, (u32)old[i], (old[i] >> 32) & ~(1u << 31));
+                *__zgc_node(map, (u32)old[i]) = old[i];
         free(old);
     }
-    u64 *node = zmap_node(map, key);
+    u32 key = __zgc_hash(font_id, codepoint);
+    u64 *node = __zgc_node(map, key);
     if (~*node & (1ull << 63)) map->used++;
     *node = (1ull << 63) | ((u64)value << 32) | key;
+}
+static u8 __utf8_masks[] = { 0, 0x7F, 0x1F, 0xF, 0x7 };
+i32 __utf8_val(char *text, i32 *codepoint) {
+    static u8 utf8len[] = { 1,1,1,1,1,1,1,1,0,0,0,0,2,2,3,4 };
+    i32 len = utf8len[(u8)(*text) >> 4];
+    *codepoint = text[0] & __utf8_masks[len];
+    for (i32 i = 1; i < len; i++)
+        *codepoint = (*codepoint << 6) | (text[i] & 0x3F);
+    return len;
+}
+i32 __utf8_len(i32 codepoint) {
+    if (codepoint < 0) return 0;
+    if (codepoint < 0x80) return 1;
+    if (codepoint < 0x800) return 2;
+    if (codepoint < 0x10000) return 3;
+    if (codepoint < 0x110000) return 4;
+    return 0;
+}
+void __utf8_print(char *text, i32 codepoint, i32 len) {
+    for (i32 i = len - 1; i > 0; codepoint >>= 6)
+        text[i--] = 0xC0 | (codepoint & 0x3F);
+    text[0] = codepoint & __utf8_masks[len];
+}
+zvec2 zui_text_sz(u16 font_id, char *text, i32 len) {
+    zvec2 ret = { 0, 0 };
+    i32 codepoint, tmp, w = 0, h = __zgc_get(&ctx->glyphs, font_id, 0x1FFFFF);
+    if (h == -1) return (zvec2) { 0, 0 };
+    for (i32 bw, i = 0; i < len; i += bw, w += tmp) {
+        bw = __utf8_val(text + i, &codepoint);
+        if (!bw) return (zvec2) { 0, 0 };
+        tmp = __zgc_get(&ctx->glyphs, font_id, codepoint);
+        if (tmp != -1) continue;
+        // request renderer for glyph width
+        zscmd_glyph cmd = {
+            .header = { ZSCMD_GLYPH, sizeof(zscmd_glyph) },
+            .c = { font_id, 0, codepoint }    
+        };
+        ctx->renderer(&cmd, ctx->user_data);
+        tmp = cmd.c.width;
+        __zgc_set(&ctx->glyphs, font_id, codepoint, tmp);
+    }
+    return (zvec2) { (u16)w, (u16)h };    
 }
 
 typedef struct zui_client {
@@ -99,7 +140,7 @@ typedef struct zui_client {
     zui_render_fn recv;
     void *user_data;
     zui_buf commands;
-    zui_buf glyph_maps;
+    zglyphcache glyphs;
 } zui_client;
 
 static zui_client *client;
@@ -110,7 +151,7 @@ void zui_client_init(zui_client_fn send, zui_render_fn recv, void *user_data) {
     client->send = send;
     client->recv = recv;
     client->user_data = user_data;
-    __buf_init(&client->glyph_maps, sizeof(zmap));
+    __zgc_init(&client->glyphs);
 }
 
 void zui_client_push(zscmd *cmd) {
@@ -147,28 +188,87 @@ void __zui_send_mouse_data() {
     client->send(&data, client->user_data);
 }
 
+typedef struct zui_ctx {
+    zvec2 window_sz;
+    zui_render_fn renderer;
+    zui_client_fn recv;
+    void *user_data;
+    zvec2 padding;
+    u16 font_id;
+    zvec2 next_size;
+    u32 flags;
+    u32 font_cnt;
+    i32 container;
+    zui_buf registry;
+    zui_buf ui;
+    zui_buf draw;
+    zui_buf stack;
+    zui_buf zdeque;
+    zglyphcache glyphs;
+    i32 __focused; // used for calculating focused
+    i32 focused;
+    i32 hovered;
+    struct {
+        zvec2 mouse_pos;
+        zvec2 prev_mouse_pos;
+        i32 mouse_state;
+        i32 prev_mouse_state;
+        zui_buf text;
+        bool ctrl_a;
+    } input;
+    struct {
+        float delta;
+        u32 ms;
+    } time;
+} zui_ctx;
+
+static zui_ctx *ctx = 0;
+
 void zui_mouse_down(u16 btn) {
+    if (!client) {
+        ctx->input.mouse_state |= btn;
+        return;
+    }
     client->mouse_state |= btn;
     __zui_send_mouse_data();
 }
-void zui_mouse_up(u16 btn) { client->mouse_state &= ~btn; __zui_send_mouse_data(); }
-void zui_mouse_move(zvec2 pos) { client->mouse_pos = pos; __zui_send_mouse_data(); }
-void zui_key_char(u32 c) {
-    // send glyph info for all fonts
+void zui_mouse_up(u16 btn) {
+    if (!client) {
+        ctx->input.mouse_state &= ~btn;
+        return;
+    }
+    client->mouse_state &= ~btn;
+    __zui_send_mouse_data();
+}
+void zui_mouse_move(zvec2 pos) {
+    if (!client) {
+        ctx->input.mouse_pos = pos;
+        return;
+    }
+    client->mouse_pos = pos;
+    __zui_send_mouse_data();
+}
+void zui_key_char(i32 c) {
+    // send glyph info for all fonts if necessary
+    if (!client) {
+        i32 len = __utf8_len(c);
+        char *utf8 = (char*)__buf_alloc(&ctx->input.text, len);
+        __utf8_print(utf8, c, len);
+        return;
+    }
     for (u16 id = 0; id < client->font_cnt; id++) {
-        zmap *map = (zmap*)client->glyph_maps.data + id;
-        if (zmap_get(map, c) == -1) continue;
+        if (__zgc_get(&client->glyphs, id, c) != -1) continue;
         zscmd_glyph glyph = {
             .header = { ZSCMD_GLYPH, sizeof(zscmd_glyph) },
             .c = (zglyph_data) {
-                .font_id = 0,
+                .font_id = id,
                 .c = c,
                 .width = 0
             }
         };
         client->recv((zscmd*)&glyph, client->user_data);
         glyph.header.id = ZCCMD_GLYPH;
-        zmap_set(map, c, glyph.c.width);
+        __zgc_set(&client->glyphs, id, c, glyph.c.width);
         client->send((zccmd*)&glyph, client->user_data);
     }
     zccmd_keys key = {
@@ -188,42 +288,6 @@ void zui_resize(u16 width, u16 height) {
     };
     client->send(&win, client->user_data);
 }
-
-typedef struct zui_ctx {
-    zvec2 window_sz;
-    zui_render_fn renderer;
-    zui_client_fn recv;
-    void *user_data;
-    zvec2 padding;
-    zfont *font;
-    zvec2 next_size;
-    u32 flags;
-    u32 font_cnt;
-    i32 container;
-    zui_buf registry;
-    zui_buf ui;
-    zui_buf draw;
-    zui_buf stack;
-    zui_buf zdeque;
-    zui_buf glyph_maps;
-    i32 __focused; // used for calculating focused
-    i32 focused;
-    i32 hovered;
-    struct {
-        zvec2 mouse_pos;
-        zvec2 prev_mouse_pos;
-        i32 mouse_state;
-        i32 prev_mouse_state;
-        zui_buf text;
-        bool ctrl_a;
-    } input;
-    struct {
-        float delta;
-        u32 ms;
-    } time;
-} zui_ctx;
-
-static zui_ctx *ctx;
 
 static void *__ui_alloc(i32 id, i32 size) {
     ((zcmd_widget*)(ctx->ui.data + ctx->container))->next = ctx->ui.used;
@@ -264,9 +328,9 @@ static void __push_clip_cmd(zrect rect, i32 zindex) {
     zscmd_clip *r = __draw_alloc(ZSCMD_CLIP, sizeof(zscmd_clip), zindex);
     r->rect = rect;
 }
-static void __push_text_cmd(zfont *font, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex) {
+static void __push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex) {
     zscmd_text *r = __draw_alloc(ZSCMD_TEXT, sizeof(zscmd_text) + len, zindex);
-    r->font_id = 0;
+    r->font_id = font_id;
     r->pos = coord;
     r->color = color;
     memcpy(r->text, text, len);
@@ -523,9 +587,21 @@ void zui_justify(u32 justification) {
     ctx->flags = justification & 15;
 }
 
+u16 zui_new_font(char *family, i32 size) {
+    __zgc_set(&ctx->glyphs, ctx->font_cnt, 0x1FFFFF, size);
+    i32 bytes = sizeof(zscmd_font) + strlen(family);
+    zscmd_font *font = _alloca(bytes);
+    font->header = (zcmd) { ZSCMD_FONT, bytes };
+    font->font_id = ctx->font_cnt;
+    font->size = size;
+    memcpy(font->family, family, bytes - sizeof(zscmd_font));
+    ctx->renderer(font, ctx->user_data);
+    return ctx->font_cnt++;
+}
+
 // set zui font
-void zui_font(zfont *font) {
-    ctx->font = font;
+void zui_font(u16 font_id) {
+    ctx->font_id = font_id;
 }
 
 void __zui_qsort(u64 *nums, i32 count) {
@@ -596,19 +672,18 @@ void zui_render() {
 
 void zui_push(zccmd *cmd) {
     switch (cmd->base.id) {
-    case ZCCMD_MOUSE: 
+    case ZCCMD_MOUSE:
         ctx->input.mouse_pos = cmd->mouse.pos;
         ctx->input.mouse_state = cmd->mouse.state;
         break;
-    case ZCCMD_KEYS:
-        *(char*)__buf_alloc(&ctx->input.text, 1) = cmd->keys.key;
-        break;
-    case ZCCMD_GLYPH: {
-        zmap *map;
-        if (__buf_read(&ctx->glyph_maps, sizeof(zmap), cmd->glyph.c.font_id, &map))
-            zmap_init(map);
-        zmap_set(map, cmd->glyph.c.c, cmd->glyph.c.width);
+    case ZCCMD_KEYS: {
+        i32 len = __utf8_len(cmd->keys.key);
+        char *utf8 = (char*)__buf_alloc(&ctx->input.text, len);
+        __utf8_print(utf8, cmd->keys.key, len);
     } break;
+    case ZCCMD_GLYPH:
+        __zgc_set(&ctx->glyphs, cmd->glyph.c.font_id, cmd->glyph.c.c, cmd->glyph.c.width);
+        break;
     case ZCCMD_WIN:
         ctx->window_sz = cmd->win.sz;
         break;
@@ -687,13 +762,12 @@ void zui_label(const char *text) {
 }
 
 static zvec2 __zui_label_size(zcmd_label *data, zvec2 bounds) {
-    zfont *font = ctx->font;
-    return font->text_size(font, data->text, data->len);
+    return zui_text_sz(ctx->font_id, data->text, data->len);
 }
 
 static void __zui_label_draw(zcmd_label *data) {
     zvec2 coords = { data->_.used.x, data->_.used.y };
-    __push_text_cmd(ctx->font, coords, (zcolor) { 250, 250, 250, 255 }, data->text, data->len, data->_.zindex);
+    __push_text_cmd(ctx->font_id, coords, (zcolor) { 250, 250, 250, 255 }, data->text, data->len, data->_.zindex);
 }
 
 // BUTTON
@@ -730,8 +804,7 @@ bool zui_check(u8 *state) {
 }
 
 static zvec2 __zui_check_size(zcmd_check *data, zvec2 bounds) {
-    zfont *font = ctx->font;
-    zvec2 sz = font->text_size(font, "\xE2\x88\x9A", 3);
+    zvec2 sz = zui_text_sz(ctx->font_id, "\xE2\x88\x9A", 3);
     return (zvec2) { sz.y + 2, sz.y + 2 };
 }
 
@@ -743,13 +816,12 @@ static void __zui_check_draw(zcmd_check *data) {
         on  = (zcolor) {  80, 110, 250, 255 };
         off = (zcolor) { 230, 230, 230, 255 };
     }
-    zfont *font = ctx->font;
-    zvec2 sz = font->text_size(font, "\xE2\x88\x9A", 3);
+    zvec2 sz = zui_text_sz(ctx->font_id, "\xE2\x88\x9A", 3);
     zrect r = data->_.used;
     if (*data->state) {
         __push_rect_cmd(r, on, data->_.zindex);
         r = __rect_add(r, (zrect) { 1, 1, -2, -2 });
-        __push_text_cmd(font, (zvec2) { r.x + (r.w - sz.x) / 2, r.y }, (zcolor) { 250, 250, 250, 255 }, "\xE2\x88\x9A", 3, data->_.zindex);
+        __push_text_cmd(ctx->font_id, (zvec2) { r.x + (r.w - sz.x) / 2, r.y }, (zcolor) { 250, 250, 250, 255 }, "\xE2\x88\x9A", 3, data->_.zindex);
     }
     else {
         __push_rect_cmd(r, off, data->_.zindex);
@@ -798,8 +870,7 @@ i32 zui_combo(char *tooltip, char *csoptions, i32 *state) {
     return (*state >> 1) - 1;
 }
 static zvec2 __zui_combo_size(zcmd_combo *data, zvec2 bounds) {
-    zfont *font = ctx->font;
-    zvec2 auto_sz = font->text_size(font, data->tooltip, (i32)strlen(data->tooltip));
+    zvec2 auto_sz = zui_text_sz(ctx->font_id, data->tooltip, (i32)strlen(data->tooltip));
     zvec2 back_sz = (zvec2) { 0, 0 };
     bounds.y = Z_AUTO;
     zcmd_widget *background = 0, *child = 0;
@@ -843,7 +914,7 @@ static void __zui_combo_draw(zcmd_combo *box) {
     i32 len;
     char *text = __zui_combo_get_option(box, selected_index, &len);
     zvec2 pos = { box->_.used.x + ctx->padding.x, box->_.used.y + ctx->padding.y };
-    __push_text_cmd(ctx->font, pos, (zcolor) { 230, 230, 230, 255 }, text, len, box->_.zindex);
+    __push_text_cmd(ctx->font_id, pos, (zcolor) { 230, 230, 230, 255 }, text, len, box->_.zindex);
 
     // this detects whether our current widget (not any children) are focused
     if(&box->_ == __ui_widget(ctx->focused) && __ui_clicked(ZM_LEFT_CLICK)) {
@@ -882,8 +953,7 @@ void zui_text(char *buffer, i32 len, zs_text *state) {
 }
 
 static zvec2 __zui_text_size(zcmd_text *data, zvec2 bounds) {
-    zfont *font = ctx->font;
-    zvec2 sz = font->text_size(font, data->buffer, (i32)strlen(data->buffer));
+    zvec2 sz = zui_text_sz(ctx->font_id, data->buffer, (i32)strlen(data->buffer));
     sz.x += 10;
     sz.y += 10;
     if(bounds.x != Z_AUTO) sz.x = bounds.x;
@@ -891,11 +961,10 @@ static zvec2 __zui_text_size(zcmd_text *data, zvec2 bounds) {
 }
 
 static i32 __zui_text_get_index(zcmd_text *data, i32 len) {
-    zfont *font = ctx->font;
     zvec2 mp = ctx->input.mouse_pos;
     bool found = false;
     for (i32 i = 0; i < len; i++) {
-        zvec2 sz = font->text_size(font, data->buffer, i + 1);
+        zvec2 sz = zui_text_sz(ctx->font_id, data->buffer, i + 1);
         sz.x += 5 - data->state->ofs;
         //zrect r = { data->_.used.x, data->_.used.y, sz.x + 5, sz.y + 10 };
         if (mp.x >= data->_.used.x && mp.x <= data->_.used.x + sz.x)
@@ -908,7 +977,6 @@ static i32 __zui_text_get_index(zcmd_text *data, i32 len) {
 
 static void __zui_text_draw(zcmd_text *data) {
     zs_text tctx = *(zs_text*)data->state;
-    zfont *font = ctx->font;
     i32 len = (i32)strlen(data->buffer);
     if(&data->_ == __ui_widget(ctx->focused)) {
         i32 start = 0;
@@ -970,7 +1038,7 @@ static void __zui_text_draw(zcmd_text *data) {
             len--;
             if(tctx.ofs > 0) {
                 char tmp[2] = { data->buffer[tctx.index], 0 };
-                tctx.ofs -= font->text_size(font, tmp, 1).x;
+                tctx.ofs -= zui_text_sz(ctx->font_id, tmp, 1).x;
                 tctx.ofs = max(tctx.ofs, 0);
             }
             for(i32 j = tctx.index; j < data->len - 1; j++)
@@ -1011,12 +1079,13 @@ static void __zui_text_draw(zcmd_text *data) {
                 }
             }
         }
+
         //if (ctx->input.clipboard) // if copy request, send data
         //    ctx->input.clipboard(data->buffer + tctx.index, tctx.selection);
     }
 
     // handle text that is wider than the box (auto scroll left / right)
-    zvec2 sz = font->text_size(font, data->buffer, tctx.index);
+    zvec2 sz = zui_text_sz(ctx->font_id, data->buffer, tctx.index);
     if(textpos.x + sz.x + 1 > data->_.used.x + data->_.used.w - 5) {
         i32 diff = textpos.x + sz.x + 6 - data->_.used.x - data->_.used.w;
         tctx.ofs += diff;
@@ -1033,11 +1102,11 @@ static void __zui_text_draw(zcmd_text *data) {
     // generate draw calls
     __push_rect_cmd(data->_.used, (zcolor) { 30, 30, 30, 255 }, data->_.zindex);
     if (true) {
-        zvec2 selection = font->text_size(font, data->buffer + tctx.index, tctx.selection);
+        zvec2 selection = zui_text_sz(ctx->font_id, data->buffer + tctx.index, tctx.selection);
         zrect r = { textpos.x + sz.x, textpos.y, selection.x, selection.y };
         __push_rect_cmd(r, (zcolor) { 60, 60, 200, 255 }, data->_.zindex);
     }
-    __push_text_cmd(ctx->font, textpos, (zcolor) { 250, 250, 250, 255 }, data->buffer, len, data->_.zindex);
+    __push_text_cmd(ctx->font_id, textpos, (zcolor) { 250, 250, 250, 255 }, data->buffer, len, data->_.zindex);
 
     if(__ui_widget(ctx->focused) == &data->_) // draw cursor
         __push_rect_cmd(cursor, (zcolor) { 200, 200, 200, 255 }, data->_.zindex);
@@ -1169,7 +1238,7 @@ void zui_init(zui_render_fn fn, void *user_data) {
     __buf_init(&global_ctx.stack, 256);
     __buf_init(&global_ctx.zdeque, 256);
     __buf_init(&global_ctx.input.text, 256);
-    __buf_init(&global_ctx.glyph_maps, 256);
+    __zgc_init(&global_ctx.glyphs);
     global_ctx.padding = (zvec2) { 5, 5 };
     global_ctx.next_size = (zvec2) { Z_NONE, Z_NONE };
     global_ctx.container = 0;
@@ -1194,6 +1263,6 @@ void zui_close() {
     free(ctx->stack.data);
     free(ctx->zdeque.data);
     free(ctx->input.text.data);
-    free(ctx->glyph_maps.data);
+    free(ctx->glyphs.data);
     ctx = 0;
 }

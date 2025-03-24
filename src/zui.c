@@ -463,19 +463,12 @@ bool __ui_clicked(i32 buttons) {
 
 zvec2 __ui_sz(zcmd_widget *ui, zvec2 bounds) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
-
-    //if(ctx->next_size.x >= 0) bounds.x = ctx->next_size.x;
-    //else if(ctx->next_size.x == Z_AUTO) bounds.x = Z_AUTO;
-    //if(ctx->next_size.y >= 0) bounds.y = ctx->next_size.y;
-    //else if(ctx->next_size.y == Z_AUTO) bounds.y = Z_AUTO;
-
-    //ctx->next_size = (zvec2) { Z_NONE, Z_NONE };
     zvec2 sz = type.size(ui, bounds);
     ui->used.w = sz.x;
     ui->used.h = sz.y;
     ui->bounds.w = bounds.x == Z_AUTO ? ui->used.w : bounds.x;
     ui->bounds.h = bounds.y == Z_AUTO ? ui->used.h : bounds.y;
-    return sz;
+    return (zvec2) { ui->bounds.w, ui->bounds.h };
 }
 bool __ui_is_child(zcmd_widget *container, zcmd_widget *other) {
     if(other < container) return false; // children must have a greater index (ptr)
@@ -625,19 +618,18 @@ void zui_end() {
 }
 
 void zui_render() {
-    if (ctx->stack.used != 0)
+    if (ctx->stack.used != 0 || ctx->window_sz.x == 0 || ctx->window_sz.y == 0)
         return;
 
     // calculate sizes
-    //ctx->next_size = (zvec2) { Z_FILL, Z_FILL };
     zcmd_widget *root = __ui_widget(0);
     root->next = 0;
-    root->bounds.x = 0;
-    root->bounds.y = 0;
     __ui_sz(root, ctx->window_sz);
 
     // calculate positions
     ctx->hovered = 0;
+    root->bounds.x = 0;
+    root->bounds.y = 0;
     __ui_pos(root, (zvec2) { 0, 0 }, 0);
     if (ctx->__focused) {
         ctx->focused = ctx->__focused;
@@ -1143,6 +1135,18 @@ static void __zui_layout_draw(zcmd_layout *data) {
         __ui_draw(child);
 }
 
+// move all values with either of the high bits set to the end of the array
+static i32 __zui_partition(u64 *values, i32 len) {
+    i32 i = 0, j = len - 1;
+    while (1) {
+        while (!(values[i] >> 63) && i < j) i++;
+        while ((values[j] >> 63) && i <= j) j--;
+        if (j <= i) break;
+        SWAP(u64, values[i], values[j]);
+    }
+    return j;
+}
+
 static zvec2 __zui_layout_size(zcmd_layout *data, zvec2 bounds) {
     // minimum size of empty container is 0, 0
     if(!__ui_has_child(&data->_))
@@ -1157,37 +1161,22 @@ static zvec2 __zui_layout_size(zcmd_layout *data, zvec2 bounds) {
     i32 major = ctx->padding.e[AXIS] * (end - 1);
     i32 minor = 0; 
 
-    // temporary steal some scratch memory from the ctx->ui buffer
-    typedef struct { zcmd_widget *w; i32 idx; float sz; } cfg;
-    cfg *configs = __buf_alloc(&ctx->draw, sizeof(cfg) * data->count);
-    __buf_pop(&ctx->draw, sizeof(cfg) * data->count);
-
-    FOR_CHILDREN(&data->_) configs[j] = (cfg) { child, j, data->data[j] }, j++;
-    
+    u64 *children = _alloca(sizeof(u64) * data->count);
+    FOR_CHILDREN(data) children[j] = ((u64)(data->data[j] < 0) << 63) | ((u64)j << 32) | __ui_index(child);
+ 
     // move percentages to end of list (calculate them last)
-    while(i < j) {
-        while((configs[i].sz < -1.0f || configs[i].sz >= -0.0f) && i < j) i++;
-        if (i >= j) break;
-        do j--; while ((configs[j].sz >= -1.0f && configs[j].sz < -0.0f) && i < j);
-        SWAP(cfg, configs[i], configs[j]);
-    }
-    float total_percent = 0;
-    for(i = j; i < end; i++) total_percent += data->data[configs[i].idx];
-
+    i32 j = __zui_partition(children, data->count);
     zvec2 child_bounds;
+    i32 pixels_left;
     child_bounds.e[!AXIS] = minor_bound;
-    i32 pixels_total = 0;
     for(i = 0; i < end; i++) {
-        float f = data->data[configs[i].idx];
-        i32 bound = (i32)f;
-        if(i >= j) {
-            bound = (i32)((major_bound - major) * f / total_percent + 0.5f);
-            total_percent -= f;
-        }
+        float f = data->data[(u16)(children[i] >> 32)];
+        i32 bound = f < 0 ? (i32)(pixels_left * -f + 0.5f) : (i32)f;
         child_bounds.e[AXIS] = bound;
-        zvec2 child_sz = __ui_sz(configs[i].w, child_bounds);
+        zvec2 child_sz = __ui_sz((i32)children[i], child_bounds);
         minor = max(minor, child_sz.e[!AXIS]);
         major += bound == Z_AUTO ? child_sz.e[AXIS] : bound;
+        if (i == j) pixels_left = major_bound - major;
     }
     FOR_CHILDREN(data) child->bounds.e[2 + !AXIS] = minor;
     bounds.e[AXIS] = major;
@@ -1204,37 +1193,99 @@ static void __zui_layout_pos(zcmd_layout *data, zvec2 pos, i32 zindex) {
             pos.x += ctx->padding.x + child->bounds.w;
     }
 }
-//void zui_grid(i32 rows, i32 cols, float *row_col_settings) {
-//    i32 bytes = sizeof(zcmd_grid) + (rows + cols - 1) * sizeof(float);
-//    zcmd_grid *l = __cont_alloc(ZW_GRID, bytes);
-//    l->rows = rows;
-//    l->cols = cols;
-//    if(row_col_settings)
-//        memcpy(l->data, row_col_settings, (rows + cols) * sizeof(float));
-//    // TODO: Disallow percentages and AUTO sizing on both rows and columns.
-//    // This creates a chicken / egg problem which is impossible to compute
-//    // without seperate size functions for each axis or multiple size passes
-//    else {
-//        for(i32 i = 0; i < (rows + cols); i++)
-//            l->data[i] = Z_AUTO;
-//    }
-//}
-//static zvec2 __zui_grid_size(zcmd_grid *grid, zvec2 bounds) {
-//    u16 *hs = _alloca(sizeof(u16) * (grid->rows + grid->cols));
-//    u16 *ws = ws + grid->rows;
-//    i32 *children = _alloca(sizeof(i32) * (grid->rows * grid->cols));
-//    i32 i = 0;
-//    FOR_CHILDREN(grid) children[i++] = __ui_index(child);
-//    if (i != grid->rows * grid->cols)
-//        _log("ERR: grid has wrong # of children\r\n");
-//    return (zvec2) { 0, 0 };
-//}
-// static void __zui_grid_pos(zcmd_grid *grid, zvec2 pos, i32 zindex) {
-//
-// }
-// static void __zui_grid_draw(zcmd_grid *grid) {
-//
-// }
+void zui_grid(i32 cols, i32 rows, float *col_row_settings) {
+    i32 bytes = sizeof(zcmd_grid) + (rows + cols - 1) * sizeof(float);
+    zcmd_grid *l = __cont_alloc(ZW_GRID, bytes);
+    l->rows = rows;
+    l->cols = cols;
+    if(col_row_settings)
+        memcpy(l->data, col_row_settings, (rows + cols) * sizeof(float));
+    else {
+        for(i32 i = 0; i < (rows + cols); i++)
+            l->data[i] = Z_AUTO;
+    }
+}
+
+static zvec2 __zui_grid_size(zcmd_grid *grid, zvec2 bounds) {
+    zvec2 used = { ctx->padding.x * (grid->cols - 1), ctx->padding.y * (grid->rows - 1) };
+    u16 *sizes = _alloca(sizeof(u16) * (grid->rows + grid->cols));
+    u8 flag = 0;
+    for (i32 i = 0; i < grid->rows + grid->cols; i++) {
+        sizes[i] = 0;
+        bool axis = i < grid->rows;
+        if (grid->data[i] == Z_AUTO) flag |= axis ? 1 : 2;
+        else if (grid->data[i] < 0)  flag |= axis ? 4 : 8;
+    }
+    if (flag == 15)
+        _log("ERR: grid cannot have both percentage and auto sized layouts for both axes\n");
+
+    // precalc percentages if possible
+    for (i32 i = 0; i < grid->rows + grid->cols; i++) {
+        bool axis = i < grid->rows;
+        if (grid->data[i] < 0 && ((flag >> axis) & 5) == 4)
+            grid->data[i] = (u16)((bounds.e[axis] - used.e[axis]) * grid->data[i]);
+    }
+    
+    i32 n = 0;
+    u64 *children = _alloca(sizeof(u64) * (grid->rows * grid->cols));
+    FOR_CHILDREN(grid) {
+        i32 x = n % grid->rows, y = n / grid->rows + grid->rows;
+        children[n] = ((grid->data[x] < 0 || grid->data[y] < 0) << 63) | ((u64)n << 32) | __ui_index(child);
+        n++;
+    }
+    if (n != grid->rows * grid->cols)
+        _log("ERR: grid has wrong # of children\r\n");
+
+    // high bit represents if the element is % sized, all percentage sized elements are calculated last
+    zvec2 non_percent = used;
+    zvec2 child_bounds;
+    __zui_partition(children, n);
+    for (i32 i = 0; i < n; i++) {
+        i32 child = (children[i] >> 32) & 0x3FFFFFFF;
+        i32 x = child % grid->cols, y = child / grid->cols + grid->cols;
+        float w = grid->data[x], h = grid->data[y];
+        child_bounds.x = w >= 0 ? w : (bounds.x - non_percent.x) * w;
+        child_bounds.y = h >= 0 ? h : (bounds.y - non_percent.y) * h;
+        zcmd_widget *widget = __ui_widget((u32)children[i]);
+        zvec2 sz = __ui_sz(widget, child_bounds);
+        u16 ofsx = max(sizes[x], sz.x) - sizes[x];
+        u16 ofsy = max(sizes[y], sz.y) - sizes[y];
+        if (w < 0) non_percent.x += ofsx;
+        if (h < 0) non_percent.y += ofsy;
+        sizes[x] += ofsx;
+        sizes[y] += ofsy;
+        used.x += ofsx;
+        used.y += ofsy;
+    }
+
+    for (i32 i = 0; i < n; i++) {
+        i32 child = (children[i] >> 32) & 0x3FFFFFFF;
+        i32 x = child % grid->cols, y = child / grid->cols + grid->cols;
+        if ((u16)grid->data[x] == Z_AUTO) __ui_widget((u32)children[i])->bounds.w = sizes[x];
+        if ((u16)grid->data[y] == Z_AUTO) __ui_widget((u32)children[i])->bounds.h = sizes[y];
+    }
+
+    return used;
+}
+
+static void __zui_grid_pos(zcmd_grid *grid, zvec2 pos, i32 zindex) {
+    i32 n = 0;
+    u16 x = pos.x;
+    FOR_CHILDREN(grid) {
+        __ui_pos(child, pos, zindex);
+        pos.x += ctx->padding.x + child->bounds.w;
+        if ((n + 1) % grid->cols == 0) {
+            pos.y += ctx->padding.y + child->bounds.h;
+            pos.x = x;
+        }
+        n++;
+    }
+}
+
+static void __zui_grid_draw(zcmd_grid *grid) {
+    FOR_CHILDREN(grid)
+        __ui_draw(child);
+}
 
 void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
     static zui_ctx global_ctx = { 0 };
@@ -1248,7 +1299,7 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
     __buf_init(&global_ctx.zdeque, 256, sizeof(u64));
     __buf_init(&global_ctx.input.text, 256, sizeof(char));
     __zgc_init(&global_ctx.glyphs);
-    global_ctx.padding = (zvec2) { 5, 5 };
+    global_ctx.padding = (zvec2) { 15, 15 };
     global_ctx.latest = 0;
     ctx = &global_ctx;
     zui_register(ZW_BLANK, __zui_blank_size, 0, __zui_blank_draw);
@@ -1261,7 +1312,7 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
     zui_register(ZW_CHECK, __zui_check_size, 0, __zui_check_draw);
     zui_register(ZW_TEXT, __zui_text_size, 0, __zui_text_draw);
     zui_register(ZW_COMBO, __zui_combo_size, __zui_combo_pos, __zui_combo_draw);
-    //zui_register(ZW_GRID, __zui_grid_size, __zui_grid_pos, __zui_grid_draw);
+    zui_register(ZW_GRID, __zui_grid_size, __zui_grid_pos, __zui_grid_draw);
 }
 
 void zui_close() {

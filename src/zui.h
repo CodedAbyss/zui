@@ -175,6 +175,7 @@ void zui_blank();
 void zui_box();
 void zui_popup();
 void zui_justify(u32 justification);
+//void zui_size(i32 w, i32 h);
 u16  zui_new_font(char *family, i32 size);
 zvec2 zui_text_sz(u16 id, char *text, i32 len);
 void zui_font(u16 id);
@@ -193,6 +194,7 @@ void zui_text(char *buffer, i32 len, zs_text *state);
 void zui_textbox(char *buffer, i32 len, i32 *state);
 void zui_col(i32 n, float *heights);
 void zui_row(i32 n, float *widths);
+void zui_grid(i32 cols, i32 rows, float *col_row_settings);
 
 #ifdef __cplusplus 
 }

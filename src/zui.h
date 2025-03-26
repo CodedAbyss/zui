@@ -57,6 +57,7 @@ enum ZUI_MOUSE {
 enum ZUI_WIDGETS {
     ZW_FIRST,
     ZW_BLANK = ZW_FIRST,
+    ZW_WINDOW,
     ZW_BOX,
     ZW_POPUP,
     ZW_LABEL,
@@ -66,7 +67,26 @@ enum ZUI_WIDGETS {
     ZW_CHECK,
     ZW_TEXT,
     ZW_COMBO,
-    ZW_GRID
+    ZW_GRID,
+    ZW_TABSET
+};
+
+enum ZUI_STYLETYPE {
+    ZS_COLOR = 0,
+    ZS_VEC2 = 1,
+    ZS_INT = 2,
+    ZS_FLOAT = 3
+};
+
+enum ZUI_STYLEABLE {
+    ZS_DONE = 0,
+    ZSC_BACKGROUND,
+    ZSC_FOREGROUND,
+    ZSC_HOVERED,
+    ZSC_UNFOCUSED,
+    ZSV_PADDING,
+    ZSV_SPACING,
+    ZSV_BORDER,
 };
 
 enum ZUI_FLAGS {
@@ -143,6 +163,7 @@ typedef struct zcmd_box { zcmd_widget _; } zcmd_box;
 typedef struct zcmd_popup { zcmd_widget _; } zcmd_popup;
 typedef struct zcmd_layout { zcmd_widget _; i32 count; float data[1]; } zcmd_layout;
 typedef struct zcmd_grid { zcmd_widget _; u8 rows, cols, padx, pady; float data[1]; } zcmd_grid;
+typedef struct zcmd_tabset { zcmd_widget _; char *cstabs; i32 *state; u16 label_cnt; u16 tabheight; } zcmd_tabset;
 
 typedef void(*zui_render_fn)(zscmd *cmd, void *user_data);
 typedef void(*zui_client_fn)(zccmd *cmd, void *user_data);
@@ -175,6 +196,15 @@ void zui_blank();
 void zui_box();
 void zui_popup();
 void zui_justify(u32 justification);
+
+// sets the style for the next container
+void zui_style(u32 widget_id, ...);
+
+zcolor zui_stylec(u16 widget_id, u16 style_id);
+zvec2  zui_stylev(u16 widget_id, u16 style_id);
+float  zui_stylef(u16 widget_id, u16 style_id);
+i32    zui_stylei(u16 widget_id, u16 style_id);
+
 //void zui_size(i32 w, i32 h);
 u16  zui_new_font(char *family, i32 size);
 zvec2 zui_text_sz(u16 id, char *text, i32 len);
@@ -195,6 +225,7 @@ void zui_textbox(char *buffer, i32 len, i32 *state);
 void zui_col(i32 n, float *heights);
 void zui_row(i32 n, float *widths);
 void zui_grid(i32 cols, i32 rows, float *col_row_settings);
+void zui_tabset(char *cstabs, i32 *state);
 
 #ifdef __cplusplus 
 }

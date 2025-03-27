@@ -95,8 +95,9 @@ enum ZUI_FLAGS {
     ZJ_RIGHT = 2,
     ZJ_UP = 4,
     ZJ_DOWN = 8,
-    ZF_PARENT = 16, // a container with children
-    ZF_TABBABLE = 32, // pressing tab can focus to this element
+    ZF_CONTAINER = 16, // a container (saves style changes for itself and children)
+    ZF_PARENT = 32,    // a container with children
+    ZF_TABBABLE = 64,  // pressing tab can focus to this element
 };
 
 typedef struct zcmd { u16 id, bytes; } zcmd;
@@ -151,19 +152,22 @@ typedef union zccmd {
     zccmd_stat  status;
 } zccmd;
 
-typedef struct zcmd_widget { u16 id, bytes; i32 next, zindex, flags; zrect bounds; zrect used; } zcmd_widget;
+typedef struct zcmd_widget    { u16 id, bytes; i32 next, zindex, flags; zrect bounds; zrect used; } zcmd_widget;
+typedef struct zcmd_container { u16 id, bytes; i32 next, zindex, flags; zrect bounds; zrect used; u16 children; u16 style_edits; } zcmd_container;
+
+#define Z_WIDGET union { zcmd base; zcmd_widget widget; }
+#define Z_CONT   union { zcmd base; zcmd_widget widget; zcmd_container cont; }
 
 typedef struct zs_text { i32 flags, index, ofs, selection; } zs_text;
-typedef struct zcmd_text { zcmd_widget _; char *buffer; i32 len; zs_text *state; } zcmd_text;
-typedef struct zcmd_btn { zcmd_widget _; u8 *state; } zcmd_btn;
-typedef struct zcmd_check { zcmd_widget _; u8 *state; } zcmd_check;
-typedef struct zcmd_combo { zcmd_widget _; char *tooltip, *csoptions; i32 *state; } zcmd_combo;
-typedef struct zcmd_label { zcmd_widget _; char *text;  i32 len; } zcmd_label;
-typedef struct zcmd_box { zcmd_widget _; } zcmd_box;
-typedef struct zcmd_popup { zcmd_widget _; } zcmd_popup;
-typedef struct zcmd_layout { zcmd_widget _; i32 count; float data[1]; } zcmd_layout;
-typedef struct zcmd_grid { zcmd_widget _; u8 rows, cols, padx, pady; float data[1]; } zcmd_grid;
-typedef struct zcmd_tabset { zcmd_widget _; char *cstabs; i32 *state; u16 label_cnt; u16 tabheight; } zcmd_tabset;
+typedef struct zcmd_box    { Z_CONT; } zcmd_box;
+typedef struct zcmd_layout { Z_CONT; i32 count; float data[1]; } zcmd_layout;
+typedef struct zcmd_grid   { Z_CONT; u8 rows, cols, padx, pady; float data[1]; } zcmd_grid;
+typedef struct zcmd_tabset { Z_CONT; char *cstabs; i32 *state; u16 label_cnt; u16 tabheight; } zcmd_tabset;
+typedef struct zcmd_text   { Z_WIDGET; char *buffer; i32 len; zs_text *state; } zcmd_text;
+typedef struct zcmd_btn    { Z_CONT; u8 *state; } zcmd_btn;
+typedef struct zcmd_check  { Z_WIDGET; u8 *state; } zcmd_check;
+typedef struct zcmd_combo  { Z_WIDGET; char *tooltip, *csoptions; i32 *state; } zcmd_combo;
+typedef struct zcmd_label  { Z_WIDGET; char *text;  i32 len; } zcmd_label;
 
 typedef void(*zui_render_fn)(zscmd *cmd, void *user_data);
 typedef void(*zui_client_fn)(zccmd *cmd, void *user_data);

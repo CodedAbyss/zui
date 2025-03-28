@@ -27,8 +27,8 @@ extern "C" {
 #define Z_AUTO ((u16)-1)
 
 typedef struct zcolor { u8 r, g, b, a; } zcolor;
-typedef struct zvec2 { union { struct { u16 x, y; }; u16 e[2]; }; } zvec2;
-typedef struct zrect { union { struct { u16 x, y, w, h; }; u16 e[4]; }; } zrect;
+typedef union zvec2 { struct { u16 x, y; }; u16 e[2]; } zvec2;
+typedef union zrect { struct { u16 x, y, w, h; }; struct { u16 pos[2]; u16 sz[2]; }; } zrect;
 
 enum ZUI_KEYS {
     ZK_L_SHIFT = 1 << 0,
@@ -91,13 +91,16 @@ enum ZUI_STYLEABLE {
 
 enum ZUI_FLAGS {
     ZJ_CENTER = 0, // justification flags
-    ZJ_LEFT = 1,
-    ZJ_RIGHT = 2,
-    ZJ_UP = 4,
-    ZJ_DOWN = 8,
-    ZF_CONTAINER = 16, // a container (saves style changes for itself and children)
-    ZF_PARENT = 32,    // a container with children
-    ZF_TABBABLE = 64,  // pressing tab can focus to this element
+    ZJ_LEFT =   1 << 0,
+    ZJ_RIGHT =  1 << 1,
+    ZJ_UP =     1 << 2,
+    ZJ_DOWN =   1 << 3,
+    ZF_CONTAINER = 1 << 4, // a container (saves style changes for itself and children)
+    ZF_PARENT =    1 << 5, // a container with children
+    ZF_TABBABLE =  1 << 6, // pressing tab can focus to this element
+    ZF_DISABLED =  1 << 7, // not selectable (ui_pos ignores it for hovered/focused consideration)
+    ZF_FILL_X    = 1 << 8, // force used.w to equal bounds.w after initial size calculation
+    ZF_FILL_Y    = 1 << 9  // force used.h to equal bounds.h after initial size calculation
 };
 
 typedef struct zcmd { u16 id, bytes; } zcmd;
@@ -186,6 +189,8 @@ void zui_mouse_move(zvec2 pos);
 void zui_key_mods(u16 mod);
 void zui_key_char(i32 c);
 void zui_resize(u16 width, u16 height);
+
+void zui_fill(u32 axis);
 
 // SERVER COMMANDS
 void zui_init(zui_render_fn renderer, zui_log_fn logger, void *user_data);

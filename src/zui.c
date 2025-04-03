@@ -1,15 +1,14 @@
 #include "zui.h"
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 #define max(a, b) ((a) > (b) ? (a) : (b))
 
 //#define assert(bool, msg) { if(!(bool)) printf(msg); exit(1); }
-#define FOR_CHILDREN(ui) for(zcmd_widget* child = _ui_get_child((zcmd_widget*)ui); child != (zcmd_widget*)ui; child = _ui_next(child))
-#define FOR_SIBLINGS(ui, sibling) for(zcmd_widget* child = (zcmd_widget*)sibling; child != (zcmd_widget*)ui; child = _ui_next(child))
-#define FOR_N_SIBLINGS(ui, sibling, n) for(i32 i = 0; sibling != (zcmd_widget*)ui && i < n; sibling = _ui_next(sibling), i++)
+#define FOR_CHILDREN(ui) for(zw_base* child = _ui_get_child((zw_base*)ui); child != (zw_base*)ui; child = _ui_next(child))
+#define FOR_SIBLINGS(ui, sibling) for(zw_base* child = (zw_base*)sibling; child != (zw_base*)ui; child = _ui_next(child))
+#define FOR_N_SIBLINGS(ui, sibling, n) for(i32 i = 0; sibling != (zw_base*)ui && i < n; sibling = _ui_next(sibling), i++)
 #define SWAP(type, a, b) { type tmp = a; a = b; b = tmp; }
 
 static void _log(char *fmt, ...);
@@ -295,9 +294,9 @@ static void _log(char *fmt, ...) {
 // Returns the width and height of text given the font id [S]
 u16 zui_text_axis(u16 font_id, char *text, i32 len, bool axis) {
     u32 codepoint;
-    u16 sz = 0;
+    u32 sz = 0;
     if (axis) return _zmap_get(&ctx->glyphs, _zgc_hash(font_id, 0x1FFFFF), &sz) ? sz : 0;
-    for (i32 bw, w = 0, i = 0; i < len; i += bw, sz += w) {
+    for (u32 bw, w = 0, i = 0; i < len; i += bw, sz += w) {
         bw = _utf8_val(text + i, &codepoint);
         if (!bw) return 0;
         u32 key = _zgc_hash(font_id, codepoint);
@@ -398,15 +397,15 @@ void zui_resize(u16 width, u16 height) {
     client->send((zccmd*)&win, client->user_data);
 }
 // Returns widget pointer given index
-static inline zcmd_widget *_ui_widget(i32 index) {
-    return (zcmd_widget*)(ctx->ui.data + index);
+static inline zw_base *_ui_widget(i32 index) {
+    return (zw_base*)(ctx->ui.data + index);
 }
 // Returns index given widget pointer
-static inline i32 _ui_index(zcmd_widget *ui) {
+static inline i32 _ui_index(zw_base *ui) {
     return (i32)((u8*)ui - (u8*)ctx->ui.data);
 }
 // Returns next ui element in the container. If none left, returns parent
-static inline zcmd_widget *_ui_next(zcmd_widget *widget) {
+static inline zw_base *_ui_next(zw_base *widget) {
     return _ui_widget(widget->next);
 }
 // Allocates space on the top of the UI stack
@@ -414,11 +413,11 @@ static inline zcmd_widget *_ui_next(zcmd_widget *widget) {
 static void *_ui_alloc(i32 id, i32 size) {
     if (ctx->cont_stack.used) {
         i32 parent = *(i32*)_buf_peek(&ctx->cont_stack, sizeof(i32));
-        ((zcmd_container*)_ui_widget(parent))->children++;
+        ((zw_cont*)_ui_widget(parent))->children++;
     }
-    zcmd_widget *prev = _ui_widget(ctx->latest);
+    zw_base *prev = _ui_widget(ctx->latest);
     ctx->latest = prev->next = ctx->ui.used;
-    zcmd_widget *widget = _buf_alloc(&ctx->ui, size);
+    zw_base *widget = _buf_alloc(&ctx->ui, size);
     memset(widget, 0, size);
     widget->id = id;
     widget->bytes = size;
@@ -433,10 +432,10 @@ static void *_ui_alloc(i32 id, i32 size) {
 static void *_cont_alloc(i32 id, i32 size) {
     i32 len = (i32)sizeof(zstyle) * ctx->style_edits;
     zstyle *edits =    _buf_pop(&ctx->cont_stack, len);
-    zcmd_container *cont = _ui_alloc(id, size);
+    zw_cont *cont = _ui_alloc(id, size);
     zstyle *new_edits = _buf_alloc(&ctx->ui, len);
     memcpy(new_edits, edits, len);
-    *(i32*)_buf_alloc(&ctx->cont_stack, sizeof(i32)) = _ui_index((zcmd_widget*)cont);
+    *(i32*)_buf_alloc(&ctx->cont_stack, sizeof(i32)) = _ui_index((zw_base*)cont);
     cont->bytes += len;
     cont->style_edits = ctx->style_edits;
     cont->flags |= ZF_CONTAINER;
@@ -518,28 +517,28 @@ static void _rect_justify(zrect *used, zrect bounds, i32 justification) {
     else
         used->x = bounds.x + (bounds.w - used->w) / 2;
 }
-void _ui_schedule_focus(zcmd_widget *widget) {
+void _ui_schedule_focus(zw_base *widget) {
     if (!widget) return;
     ctx->focused = 0;
     ctx->__focused = _ui_index(widget);
 }
-zcmd_widget *_ui_find_with_flag(zcmd_widget *start, u32 flags) {
+zw_base *_ui_find_with_flag(zw_base *start, u32 flags) {
     i32 si = _ui_index(start);
     for(i32 index = si + start->bytes; index < ctx->ui.used; index += _ui_widget(index)->bytes) {
-        zcmd_widget *w = _ui_widget(index);
+        zw_base *w = _ui_widget(index);
         if (w->flags & flags)
             return w;
     }
     for (i32 index = 0; index < si; index += _ui_widget(index)->bytes) {
-        zcmd_widget *w = _ui_widget(index);
+        zw_base *w = _ui_widget(index);
         if (w->flags & flags)
             return w;
     }
     return 0;
 }
-zcmd_widget *_ui_get_child(zcmd_widget *ui) {
+zw_base *_ui_get_child(zw_base *ui) {
     if (~ui->flags & ZF_PARENT) return ui;
-    return (zcmd_widget*)((u8*)ui + ((ui->bytes + ctx->ui.alignsub1) & ~ctx->ui.alignsub1));
+    return (zw_base*)((u8*)ui + ((ui->bytes + ctx->ui.alignsub1) & ~ctx->ui.alignsub1));
 }
 bool _ui_pressed(i32 buttons) {
     if(ctx->mouse_state & buttons)
@@ -557,7 +556,7 @@ bool _ui_clicked(i32 buttons) {
     return false;
 }
 
-void _ui_print(zcmd_widget *cmd, int indent) {
+void _ui_print(zw_base *cmd, int indent) {
     _log("%04x | ", _ui_index(cmd));
     for (i32 i = 0; i < indent; i++)
         _log("    ");    
@@ -568,14 +567,14 @@ void _ui_print(zcmd_widget *cmd, int indent) {
         _ui_print(child, indent + 1);
 }
 
-u16 _ui_sz(zcmd_widget *ui, bool axis, u16 bound) {
+u16 _ui_sz(zw_base *ui, bool axis, u16 bound) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
     u16 sz = type.size(ui, axis, bound);
     ui->used.pos[axis] = sz;
     ui->bounds.sz[axis] = bound == Z_AUTO ? ui->used.sz[axis] : bound;
     return ui->bounds.sz[axis];
 }
-bool _ui_is_child(zcmd_widget *container, zcmd_widget *other) {
+bool _ui_is_child(zw_base *container, zw_base *other) {
     if(other < container) return false; // children must have a greater index (ptr)
     if(other == container) return true; // we consider a ui to be a child of itself (useful for hovering / focusing)
     i32 index = _ui_index(other);
@@ -589,12 +588,12 @@ bool _ui_is_child(zcmd_widget *container, zcmd_widget *other) {
             return true;
     return false;
 }
-static inline bool _ui_hovered(zcmd_widget *ui) { return ui == _ui_widget(ctx->hovered); }
-static inline bool _ui_cont_hovered(zcmd_widget *ui) { return _ui_is_child(ui, _ui_widget(ctx->hovered)); }
-static inline bool _ui_focused(zcmd_widget *ui) { return ui == _ui_widget(ctx->focused); }
-static inline bool _ui_cont_focused(zcmd_widget *ui) { return _ui_is_child(ui, _ui_widget(ctx->focused)); }
+static inline bool _ui_hovered(zw_base *ui) { return ui == _ui_widget(ctx->hovered); }
+static inline bool _ui_cont_hovered(zw_base *ui) { return _ui_is_child(ui, _ui_widget(ctx->hovered)); }
+static inline bool _ui_focused(zw_base *ui) { return ui == _ui_widget(ctx->focused); }
+static inline bool _ui_cont_focused(zw_base *ui) { return _ui_is_child(ui, _ui_widget(ctx->focused)); }
 
-void _ui_pos(zcmd_widget *ui, zvec2 pos, i32 zindex) {
+void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
     ui->bounds.x = pos.x;
     ui->bounds.y = pos.y;
@@ -614,13 +613,13 @@ void _ui_pos(zcmd_widget *ui, zvec2 pos, i32 zindex) {
         type.pos(ui, *(zvec2*)&ui->used, zindex);
 }
 
-void _ui_draw(zcmd_widget *ui) {
+void _ui_draw(zw_base *ui) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
-    zcmd_container *c;
+    zw_cont *c;
     zstyle *edits;
     // apply style changes for this container and it's children
     if (ui->flags & ZF_CONTAINER) {
-        c = (zcmd_container*)ui;
+        c = (zw_cont*)ui;
         edits = (zstyle*)((u8*)ui + _buf_align(&ctx->ui, ui->bytes - c->style_edits * sizeof(zstyle)));
         for (i32 i = 0; i < c->style_edits; i++) {
             u32 value, key = _zs_hash(edits[i].widget_id, edits[i].style_id);
@@ -667,7 +666,7 @@ void zui_print_tree() {
 void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb) {
     ctx->registry.used = (widget_id - ZW_FIRST) * sizeof(zui_type);
     zui_type *t = _buf_alloc(&ctx->registry, sizeof(zui_type));
-    t->size = (zvec2(*)(void*, zvec2))size_cb;
+    t->size = (u16(*)(void*, bool, u16))size_cb;
     t->pos = (void(*)(void*, zvec2, i32))pos_cb;
     t->draw = (void(*)(void*))draw_cb;
 }
@@ -729,7 +728,7 @@ static i32 _zui_partition(u64 *values, i32 len) {
 void zui_end() {
     i32 container = *(i32*)_buf_pop(&ctx->cont_stack, sizeof(i32) + sizeof(zstyle) * ctx->style_edits);
     // if active container isn't the most recent element set parent flag (it has children)
-    zcmd_widget* latest = _ui_widget(ctx->latest);
+    zw_base* latest = _ui_widget(ctx->latest);
     if (container != ctx->latest) {
         _ui_widget(container)->flags |= ZF_PARENT;
         ctx->latest = latest->next = container;
@@ -769,7 +768,7 @@ void zui_render() {
         return;
 
     // calculate sizes
-    zcmd_widget *root = _ui_widget(0);
+    zw_base *root = _ui_widget(0);
     root->next = 0;
     _ui_sz(root, 0, ctx->window_sz.x);
     _ui_sz(root, 1, ctx->window_sz.y);
@@ -828,27 +827,27 @@ void zui_push(zccmd *cmd) {
 }
 
 void zui_blank() {
-    _ui_alloc(ZW_BLANK, sizeof(zcmd_widget));
+    _ui_alloc(ZW_BLANK, sizeof(zw_base));
 }
-static zvec2 __zui_blank_size(zcmd_widget *w, zvec2 bounds) { return bounds; }
-static void __zui_blank_draw(zcmd_widget *w) {}
+static zvec2 __zui_blank_size(zw_base *w, zvec2 bounds) { return bounds; }
+static void __zui_blank_draw(zw_base *w) {}
 
 // returns true if window is displayed
 void zui_box() {
-    _cont_alloc(ZW_BOX, sizeof(zcmd_box));
+    _cont_alloc(ZW_BOX, sizeof(zw_box));
 }
-static u16 __zui_box_size(zcmd_box *box, bool axis, u16 bound) {
+static u16 __zui_box_size(zw_box *box, bool axis, u16 bound) {
     if (bound != Z_AUTO) bound -= ctx->padding.e[axis] * 2;
     u16 auto_sz = 0;
     FOR_CHILDREN(box)
         auto_sz = max(auto_sz, _ui_sz(child, axis, bound));
     return (bound == Z_AUTO ? auto_sz : bound) + ctx->padding.e[axis] * 2;
 }
-static void __zui_box_pos(zcmd_box *box, zvec2 pos, i32 zindex) {
+static void __zui_box_pos(zw_box *box, zvec2 pos, i32 zindex) {
     zvec2 child_pos = { pos.x + ctx->padding.x, pos.y + ctx->padding.y };
     FOR_CHILDREN(box) _ui_pos(child, child_pos, zindex);
 }
-static void __zui_box_draw(zcmd_box *box) {
+static void __zui_box_draw(zw_box *box) {
     _push_rect_cmd(box->widget.bounds, zui_stylec(ZW_BOX, ZSC_BACKGROUND), box->widget.zindex);
     FOR_CHILDREN(box) _ui_draw(child);
 }
@@ -856,13 +855,13 @@ static void __zui_box_draw(zcmd_box *box) {
 void zui_window() {
     ctx->ui.used = 0;
     ctx->flags = 0;
-    _cont_alloc(ZW_WINDOW, sizeof(zcmd_box));
+    _cont_alloc(ZW_WINDOW, sizeof(zw_box));
 }
-static u16 __zui_window_size(zcmd_box *window, bool axis, u16 bound) {
+static u16 __zui_window_size(zw_box *window, bool axis, u16 bound) {
     FOR_CHILDREN(window) _ui_sz(child, axis, bound);
     return bound;
 }
-static void __zui_window_pos(zcmd_box *window, zvec2 pos) {
+static void __zui_window_pos(zw_box *window, zvec2 pos) {
     FOR_CHILDREN(window) _ui_pos(child, pos, 1);
 }
 
@@ -872,7 +871,7 @@ zvec2 zui_window_sz() {
 
 // LABEL
 void zui_label_n(char *text, i32 len) {
-    zcmd_label *l = _ui_alloc(ZW_LABEL, sizeof(zcmd_label));
+    zw_label *l = _ui_alloc(ZW_LABEL, sizeof(zw_label));
     l->text = text;
     l->len = len;
 }
@@ -881,18 +880,18 @@ void zui_label(const char *text) {
     zui_label_n((char*)text, (i32)strlen(text));
 }
 
-static u16 _zui_label_size(zcmd_label *data, bool axis, u16 bound) {
+static u16 _zui_label_size(zw_label *data, bool axis, u16 bound) {
     return zui_text_axis(ctx->font_id, data->text, data->len, axis);
 }
 
-static void _zui_label_draw(zcmd_label *data) {
+static void _zui_label_draw(zw_label *data) {
     zvec2 coords = { data->widget.used.x, data->widget.used.y };
     _push_text_cmd(ctx->font_id, coords, zui_stylec(ZW_LABEL, ZSC_FOREGROUND), data->text, data->len, data->widget.zindex);
 }
 
 // BUTTON
 bool zui_button(const char *text, u8 *state) {
-    zcmd_btn *l = _cont_alloc(ZW_BTN, sizeof(zcmd_btn));
+    zw_btn *l = _cont_alloc(ZW_BTN, sizeof(zw_btn));
     l->state = state;
     zui_label(text);
     zui_end();
@@ -903,7 +902,7 @@ bool zui_button(const char *text, u8 *state) {
 // This allows trivial addition of various button kinds: with images, multiple labels, etc.
 // Reuse __zui_box_size for sizing
 
-static void _zui_button_draw(zcmd_btn *btn) {
+static void _zui_button_draw(zw_btn *btn) {
     zcolor c = (zcolor) { 80, 80, 80, 255 };
     if(_ui_cont_hovered(&btn->widget)) {// hovered
         *btn->state = _ui_clicked(ZM_LEFT_CLICK);
@@ -918,16 +917,16 @@ static void _zui_button_draw(zcmd_btn *btn) {
 }
 
 bool zui_check(u8 *state) {
-    zcmd_check *c = _ui_alloc(ZW_CHECK, sizeof(zcmd_check));
+    zw_check *c = _ui_alloc(ZW_CHECK, sizeof(zw_check));
     c->state = state;
     return *state;
 }
 
-static u16 _zui_check_size(zcmd_check *data, bool axis, zvec2 bound) {
+static u16 _zui_check_size(zw_check *data, bool axis, zvec2 bound) {
     return zui_text_axis(ctx->font_id, "\xE2\x88\x9A", 3, axis) + 2;
 }
 
-static void _zui_check_draw(zcmd_check *data) {
+static void _zui_check_draw(zw_check *data) {
     zcolor on =  (zcolor) { 60,  90,  250, 255 };
     zcolor off = (zcolor) { 200, 200, 200, 255 };
     if (_ui_hovered(&data->widget)) {// hovered
@@ -951,7 +950,7 @@ static void _zui_check_draw(zcmd_check *data) {
 void zui_sliderf(char *tooltip, f32 min, f32 max, f32 *value);
 void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
 
-char *_zui_combo_get_option(zcmd_combo *c, i32 n, i32 *len) {
+char *_zui_combo_get_option(zw_combo *c, i32 n, i32 *len) {
     if(n < 0) {
         *len = (i32)strlen(c->tooltip);
         return c->tooltip;
@@ -973,7 +972,7 @@ char *_zui_combo_get_option(zcmd_combo *c, i32 n, i32 *len) {
 }
 // create a combo box with comma-seperated options
 i32 zui_combo(char *tooltip, char *csoptions, i32 *state) {
-    zcmd_combo *c = _cont_alloc(ZW_COMBO, sizeof(zcmd_combo));
+    zw_combo *c = _cont_alloc(ZW_COMBO, sizeof(zw_combo));
     c->tooltip = tooltip;
     c->csoptions = csoptions;
     c->state = state;
@@ -988,7 +987,7 @@ i32 zui_combo(char *tooltip, char *csoptions, i32 *state) {
     zui_end();
     return (*state >> 1) - 1;
 }
-static u16 _zui_combo_size(zcmd_combo *data, bool axis, u16 bound) {
+static u16 _zui_combo_size(zw_combo *data, bool axis, u16 bound) {
     //zvec2 auto_sz = zui_text_sz(ctx->font_id, data->tooltip, (i32)strlen(data->tooltip));
     //zvec2 back_sz = (zvec2) { 0, 0 };
     //bounds.y = Z_AUTO;
@@ -1010,11 +1009,12 @@ static u16 _zui_combo_size(zcmd_combo *data, bool axis, u16 bound) {
     //if (*data->state & 1)
     //    _ui_sz(background, back_sz);
     //return auto_sz;
+    return 0;
 }
-static void _zui_combo_pos(zcmd_combo *data, zvec2 pos, i32 zindex) {
+static void _zui_combo_pos(zw_combo *data, zvec2 pos, i32 zindex) {
     if (~*data->state & 1) return;
     pos.y += data->widget.used.h;
-    zcmd_widget *background = _ui_get_child(&data->widget);
+    zw_base *background = _ui_get_child(&data->widget);
     i32 prev = ctx->flags;
     ctx->flags = ZJ_LEFT;
     zindex += 1;
@@ -1025,7 +1025,7 @@ static void _zui_combo_pos(zcmd_combo *data, zvec2 pos, i32 zindex) {
     }
     ctx->flags = prev;
 }
-static void _zui_combo_draw(zcmd_combo *box) {
+static void _zui_combo_draw(zw_combo *box) {
     bool is_focused = &box->widget == _ui_widget(ctx->focused);
     i32 selected_index = (*box->state >> 1) - 1;
     _push_rect_cmd(box->widget.used, (zcolor) { 70, 70, 70, 255 }, box->widget.zindex);
@@ -1041,7 +1041,7 @@ static void _zui_combo_draw(zcmd_combo *box) {
         return;
     }
     if(~*box->state & 1) return;
-    zcmd_widget *background = _ui_get_child(&box->widget);
+    zw_base *background = _ui_get_child(&box->widget);
     _push_clip_cmd(background->used, background->zindex);
     _push_rect_cmd(background->used, (zcolor) { 80, 80, 80, 255 }, background->zindex);
     i32 i = 0;
@@ -1063,20 +1063,20 @@ static void _zui_combo_draw(zcmd_combo *box) {
 void zui_validator(bool (*validator)(char *text));
 
 // creates a single-line text input
-void zui_text(char *buffer, i32 len, zs_text *state) {
-    zcmd_text *l = _ui_alloc(ZW_TEXT, sizeof(zcmd_text));
+void zui_text(char *buffer, i32 len, zd_text *state) {
+    zw_text *l = _ui_alloc(ZW_TEXT, sizeof(zw_text));
     l->widget.flags |= ZF_TABBABLE;
     l->buffer = buffer;
     l->len = len;
     l->state = state;
 }
 
-static u16 _zui_text_size(zcmd_text *data, bool axis, u16 bound) {
+static u16 _zui_text_size(zw_text *data, bool axis, u16 bound) {
     if (!axis && bound != Z_AUTO) return bound;
     return zui_text_axis(ctx->font_id, data->buffer, (i32)strlen(data->buffer), axis) + 10;
 }
 
-static i32 _zui_text_get_index(zcmd_text *data, i32 len) {
+static i32 _zui_text_get_index(zw_text *data, i32 len) {
     zvec2 mp = ctx->mouse_pos;
     bool found = false;
     for (i32 i = 0; i < len; i++) {
@@ -1091,8 +1091,8 @@ static i32 _zui_text_get_index(zcmd_text *data, i32 len) {
     return -1;
 }
 
-static void _zui_text_draw(zcmd_text *data) {
-    zs_text tctx = *(zs_text*)data->state;
+static void _zui_text_draw(zw_text *data) {
+    zd_text tctx = *(zd_text*)data->state;
     i32 len = (i32)strlen(data->buffer);
     if(&data->widget == _ui_widget(ctx->focused)) {
         i32 start = 0;
@@ -1121,7 +1121,7 @@ static void _zui_text_draw(zcmd_text *data) {
         for(i32 i = start; i < ctx->text.used; i++) {
             char c = ((char*)ctx->text.data)[i];
             if (c == 9) { // on tab, switch focus to next tabbable element
-                zcmd_widget *w = _ui_find_with_flag(&data->widget, ZF_TABBABLE);
+                zw_base *w = _ui_find_with_flag(&data->widget, ZF_TABBABLE);
                 _ui_schedule_focus(w);
                 break;
             }
@@ -1234,8 +1234,8 @@ static void _zui_text_draw(zcmd_text *data) {
 void zui_textbox(char *buffer, i32 len, i32 *state);
 
 static void _zui_layout(i32 id, i32 n, float *sizes) {
-    i32 bytes = sizeof(zcmd_layout) + (n - 1) * sizeof(float);
-    zcmd_layout *l = _cont_alloc(id, bytes);
+    i32 bytes = sizeof(zw_layout) + (n - 1) * sizeof(float);
+    zw_layout *l = _cont_alloc(id, bytes);
     l->count = n;
     if(sizes)
         memcpy(l->data, sizes, n * sizeof(float));
@@ -1253,12 +1253,12 @@ void zui_row(i32 n, float *heights) {
     _zui_layout(ZW_ROW, n, heights);
 }
 
-static void _zui_layout_draw(zcmd_layout *data) {
+static void _zui_layout_draw(zw_layout *data) {
     FOR_CHILDREN(data)
         _ui_draw(child);
 }
 
-static zvec2 _zui_layout_size(zcmd_layout *data, zvec2 bounds) {
+static u16 _zui_layout_size(zw_layout *data, bool axis, u16 bound) {
     //// minimum size of empty container is 0, 0
     //if(~data->widget.flags & ZF_PARENT)
     //    return (zvec2) { 0, 0 };
@@ -1293,9 +1293,10 @@ static zvec2 _zui_layout_size(zcmd_layout *data, zvec2 bounds) {
     //bounds.e[AXIS] = major;
     //bounds.e[!AXIS] = minor;
     //return bounds;
+    return 0;
 }
 
-static void _zui_layout_pos(zcmd_layout *data, zvec2 pos, i32 zindex) {
+static void _zui_layout_pos(zw_layout *data, zvec2 pos, i32 zindex) {
     FOR_CHILDREN(data) {
         _ui_pos(child, pos, zindex);
         if(data->widget.id == ZW_COL)
@@ -1305,8 +1306,8 @@ static void _zui_layout_pos(zcmd_layout *data, zvec2 pos, i32 zindex) {
     }
 }
 void zui_grid(i32 cols, i32 rows, float *col_row_settings) {
-    i32 bytes = sizeof(zcmd_grid) + (rows + cols - 1) * sizeof(float);
-    zcmd_grid *l = _cont_alloc(ZW_GRID, bytes);
+    i32 bytes = sizeof(zw_grid) + (rows + cols - 1) * sizeof(float);
+    zw_grid *l = _cont_alloc(ZW_GRID, bytes);
     l->rows = rows;
     l->cols = cols;
     if(col_row_settings)
@@ -1317,15 +1318,15 @@ void zui_grid(i32 cols, i32 rows, float *col_row_settings) {
     }
 }
 
-static u16 _zui_grid_size(zcmd_grid *grid, bool axis, u16 bound) {
+static u16 _zui_grid_size(zw_grid *grid, bool axis, u16 bound) {
     u16 major_cnt = axis ? grid->rows : grid->cols;
     u16 minor_cnt = axis ? grid->cols : grid->rows;
     u16 sz = ctx->padding.e[axis] * (major_cnt - 1);
     typedef union {
         u64 u;
-        struct { i32 index; u32 n : 30; u32 percent : 1; u32 fill : 1 };
+        struct { i32 index; u32 n : 30; u32 percent : 1; u32 fill : 1; };
     } flags;
-    flags *children = _alloc(sizeof(flags) * grid->rows * grid->cols);
+    flags *children = _alloca(sizeof(flags) * grid->rows * grid->cols);
     i32 n = 0;
     FOR_CHILDREN(grid) {
         zvec2 pos = { n % grid->rows, n / grid->rows + grid->rows };
@@ -1346,7 +1347,7 @@ static u16 _zui_grid_size(zcmd_grid *grid, bool axis, u16 bound) {
     for (i32 i = 0; i < n; i++) {
         i32 child = children[i].n;
         u16 pos = axis ? (child / grid->rows + grid->rows) : (child % grid->rows);
-        zcmd_widget *widget = _ui_widget(children[i].index);
+        zw_base *widget = _ui_widget(children[i].index);
         if (children[i].fill) {
             _ui_sz(widget, axis, sizes[pos]);
             continue;
@@ -1426,7 +1427,7 @@ static u16 _zui_grid_size(zcmd_grid *grid, bool axis, u16 bound) {
     return sz;
 }
 
-static void _zui_grid_pos(zcmd_grid *grid, zvec2 pos, i32 zindex) {
+static void _zui_grid_pos(zw_grid *grid, zvec2 pos, i32 zindex) {
     i32 n = 0;
     u16 x = pos.x;
     FOR_CHILDREN(grid) {
@@ -1440,7 +1441,7 @@ static void _zui_grid_pos(zcmd_grid *grid, zvec2 pos, i32 zindex) {
     }
 }
 
-static void _zui_grid_draw(zcmd_grid *grid) {
+static void _zui_grid_draw(zw_grid *grid) {
     zvec2 borders = zui_stylev(ZW_GRID, ZSV_BORDER);
     zcolor border_color = zui_stylec(ZW_GRID, ZSC_FOREGROUND);
     i32 i = 0;
@@ -1472,7 +1473,7 @@ static bool _zui_cslen(char *cs, i32 *len) {
 }
 
 void zui_tabset(char *cstabs, i32 *state) {
-    zcmd_tabset *l = _cont_alloc(ZW_TABSET, sizeof(zcmd_tabset));
+    zw_tabset *l = _cont_alloc(ZW_TABSET, sizeof(zw_tabset));
     l->cstabs = cstabs;
     l->state = state;
     i32 len;
@@ -1485,11 +1486,11 @@ void zui_tabset(char *cstabs, i32 *state) {
     } while (loop);
 }
 
-static u16 _zui_tabset_size(zcmd_tabset *tabs, bool axis, u16 bound) {
+static u16 _zui_tabset_size(zw_tabset *tabs, bool axis, u16 bound) {
     zvec2 padding = zui_stylev(ZW_TABSET, ZSV_PADDING);
     //zvec2 tab_size = { padding.x * 2 * tabs->label_cnt, 0 };
     u16 tab_size = axis ? 0 : padding.x * 2 * tabs->label_cnt;
-    zcmd_widget *label = _ui_get_child(&tabs->widget);
+    zw_base *label = _ui_get_child(&tabs->widget);
     for (i32 i = 0; i < tabs->label_cnt; i++) {
         u16 sz = _ui_sz(label, axis, Z_AUTO);
         tab_size = axis ? max(tab_size, sz) : tab_size + sz;
@@ -1514,8 +1515,8 @@ static u16 _zui_tabset_size(zcmd_tabset *tabs, bool axis, u16 bound) {
     return bound;
 }
 
-static void _zui_tabset_pos(zcmd_tabset *tabs, zvec2 pos) {
-    zcmd_widget *label = _ui_get_child(&tabs->widget);
+static void _zui_tabset_pos(zw_tabset *tabs, zvec2 pos) {
+    zw_base *label = _ui_get_child(&tabs->widget);
     zvec2 padding = zui_stylev(ZW_TABSET, ZSV_PADDING);
     zvec2 tmp = { pos.x, pos.y + tabs->tabheight };
     pos.y += padding.y;
@@ -1530,11 +1531,11 @@ static void _zui_tabset_pos(zcmd_tabset *tabs, zvec2 pos) {
         _ui_pos(child, pos, tabs->widget.zindex);
 }
 
-static void _zui_tabset_draw(zcmd_tabset *tabs) {
+static void _zui_tabset_draw(zw_tabset *tabs) {
     zrect bounds = tabs->widget.bounds;
     zvec2 padding = zui_stylev(ZW_TABSET, ZSV_PADDING);
     i32 zindex = tabs->widget.zindex;
-    zcmd_widget *label = _ui_get_child(&tabs->widget);
+    zw_base *label = _ui_get_child(&tabs->widget);
     FOR_N_SIBLINGS(tabs, label, tabs->label_cnt) {
         zrect tab_rect = _rect_pad(label->bounds, padding);
         if (_ui_clicked(ZM_LEFT_CLICK) && _vec_within(ctx->mouse_pos, tab_rect))

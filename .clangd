@@ -1,3 +1,0 @@
-CompileFlags:
-  Add:
-    - "-IC:/Users/user/scoop/apps/zig/0.14.0/lib/libc/include/any-windows-any"

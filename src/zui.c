@@ -149,25 +149,25 @@ void _utf8_print(char *text, u32 codepoint, i32 len) {
 // Window / input events are sent to the server, and draw calls sent back to the client
 // The implementation is based on the <send> and <recv> functions.
 // Check the examples folder on how to use a zui_client, or implement your own
-typedef struct zui_client {
-    zui_render_fn renderer;
-    zui_log_fn log;
-    void *user_data;
-    zvec2 mouse_pos;
-    zvec2 window_sz;
-    u16 mouse_state;
-    u16 keyboard_modifiers;
-    u16 font_cnt;
-    u16 ctx_state;
-    zui_buf commands;
-    zmap glyphs;
-    i32 response;
+// typedef struct zui_client {
+//     zui_render_fn renderer;
+//     zui_log_fn log;
+//     void *user_data;
+//     zvec2 mouse_pos;
+//     zvec2 window_sz;
+//     u16 mouse_state;
+//     u16 keyboard_modifiers;
+//     u16 font_cnt;
+//     u16 ctx_state;
+//     zui_buf commands;
+//     zmap glyphs;
+//     i32 response;
+//
+//     zui_client_fn send;
+//     zscmd *active_cmd;
+// } zui_client;
 
-    zui_client_fn send;
-    zscmd *active_cmd;
-} zui_client;
-
-static zui_client *client;
+// static zui_client *client;
 
 typedef struct zui_ctx {
     zui_render_fn renderer;
@@ -207,83 +207,83 @@ static zui_ctx *ctx = 0;
 
 
 // initialize a zui_client. <send> defines how to send commands to the server. <recv> defines how to interpret render commands from the server
-void zui_client_init(zui_client_fn send, zui_render_fn recv, zui_log_fn log, void *user_data) {
-    static zui_client global_client = { 0 };
-    client = &global_client;
-    client->log = log;
-    client->send = send;
-    client->renderer = recv;
-    client->user_data = user_data;
-    _buf_init(&client->commands, 256, sizeof(void*));
-    _zmap_init(&client->glyphs);
-}
+// void zui_client_init(zui_client_fn send, zui_render_fn recv, zui_log_fn log, void *user_data) {
+//     static zui_client global_client = { 0 };
+//     client = &global_client;
+//     client->log = log;
+//     client->send = send;
+//     client->renderer = recv;
+//     client->user_data = user_data;
+//     _buf_init(&client->commands, 256, sizeof(void*));
+//     _zmap_init(&client->glyphs);
+// }
 
-void zui_client_respond(i32 value) {
-    client->response = value;
-    zscmd *cmd = client->active_cmd;
-    if (!cmd) return;
-    switch (cmd->base.id) {
-    case ZSCMD_GLYPH: {
-        zccmd_glyph glyph = {
-            .header = { ZCCMD_GLYPH, sizeof(zccmd_glyph) },
-            .c = { cmd->glyph.c.font_id, (u16)client->response, cmd->glyph.c.c }
-        };
-        client->send((zccmd*)&glyph, client->user_data);
-    } break;
-    }
-}
+// void zui_client_respond(i32 value) {
+//     client->response = value;
+//     zscmd *cmd = client->active_cmd;
+//     if (!cmd) return;
+//     switch (cmd->base.id) {
+//     case ZSCMD_GLYPH: {
+//         zccmd_glyph glyph = {
+//             .header = { ZCCMD_GLYPH, sizeof(zccmd_glyph) },
+//             .c = { cmd->glyph.c.font_id, (u16)client->response, cmd->glyph.c.c }
+//         };
+//         client->send((zccmd*)&glyph, client->user_data);
+//     } break;
+//     }
+// }
 
 // Pushes a command onto the command stack (unless it should be processed immediately).
-void zui_client_push(zscmd *cmd) {
-    if (cmd->base.id >= ZSCMD_CLIP && cmd->base.id <= ZSCMD_TEXT) { // draw commands are pushed to the draw stack
-        if (client->ctx_state) { // only clear previous draw commands once we receive a new set.
-            client->ctx_state = false;
-            client->commands.used = 0;
-        }
-        memcpy(_buf_alloc(&client->commands, cmd->base.bytes), cmd, cmd->base.bytes);
-        return;
-    }
-    // non-draw commands are executed immediately
-    client->active_cmd = cmd;
-    client->renderer(cmd, client->user_data);
-    client->active_cmd = 0;
-}
+// void zui_client_push(zscmd *cmd) {
+//     if (cmd->base.id >= ZSCMD_CLIP && cmd->base.id <= ZSCMD_TEXT) { // draw commands are pushed to the draw stack
+//         if (client->ctx_state) { // only clear previous draw commands once we receive a new set.
+//             client->ctx_state = false;
+//             client->commands.used = 0;
+//         }
+//         memcpy(_buf_alloc(&client->commands, cmd->base.bytes), cmd, cmd->base.bytes);
+//         return;
+//     }
+//     // non-draw commands are executed immediately
+//     client->active_cmd = cmd;
+//     client->renderer(cmd, client->user_data);
+//     client->active_cmd = 0;
+// }
 
 // Push/process a buffer of packed commands onto the command stack.
-void zui_client_push_raw(char *bytes, i32 len) {
-    if (len < sizeof(zcmd)) return;
-    zscmd *cmd = (zscmd*)bytes;
-    if (cmd->base.bytes > len) return;
-    zui_client_push((zscmd*)cmd);
-    zui_client_push_raw(bytes + cmd->base.bytes, len - cmd->base.bytes);
-}
+// void zui_client_push_raw(char *bytes, i32 len) {
+//     if (len < sizeof(zcmd)) return;
+//     zscmd *cmd = (zscmd*)bytes;
+//     if (cmd->base.bytes > len) return;
+//     zui_client_push((zscmd*)cmd);
+//     zui_client_push_raw(bytes + cmd->base.bytes, len - cmd->base.bytes);
+// }
 
 // Initiate a render on the client. This should be called when a ZSCMD_DRAW command is received.
-void zui_client_render() {
-    char *ptr = (char*)client->commands.data;
-    char *end = ptr + client->commands.used;
-    while (ptr < end) {
-        zscmd *cmd = (zscmd*)ptr;
-        client->renderer(cmd, client->user_data);
-        ptr += _buf_align(&client->commands, cmd->base.bytes);
-    }
-    client->ctx_state = true;
-}
+// void zui_client_render() {
+//     char *ptr = (char*)client->commands.data;
+//     char *end = ptr + client->commands.used;
+//     while (ptr < end) {
+//         zscmd *cmd = (zscmd*)ptr;
+//         client->renderer(cmd, client->user_data);
+//         ptr += _buf_align(&client->commands, cmd->base.bytes);
+//     }
+//     client->ctx_state = true;
+// }
 
-static void _zui_send_mouse_data() {
-    zccmd_mouse data = {
-        .header = { ZCCMD_MOUSE, sizeof(zccmd_mouse) },
-        .pos = client->mouse_pos,
-        .state = client->mouse_state
-    };
-    client->send((zccmd*)&data, client->user_data);
-}
+// static void _zui_send_mouse_data() {
+//     zccmd_mouse data = {
+//         .header = { ZCCMD_MOUSE, sizeof(zccmd_mouse) },
+//         .pos = client->mouse_pos,
+//         .state = client->mouse_state
+//     };
+//     client->send((zccmd*)&data, client->user_data);
+// }
 
-// Logs using specified log function [C/S]
+// Logs using specified log function
 static void _log(char *fmt, ...) {
-    if (!client && !ctx) return;
-    void *user_data = client ? client->user_data : ctx->user_data;
-    zui_log_fn fn = client ? client->log : ctx->log;
+    if (!ctx) return;
+    void *user_data = ctx->user_data;
+    zui_log_fn fn = ctx->log;
     if (!fn) return;
     va_list args;
     va_start(args, fmt);
@@ -303,11 +303,11 @@ u16 zui_text_axis(u16 font_id, char *text, i32 len, bool axis) {
         if (_zmap_get(&ctx->glyphs, key, &w))
             continue;
         // request renderer for glyph width
-        zscmd_glyph cmd = {
-            .header = { ZSCMD_GLYPH, sizeof(zscmd_glyph) },
+        zcmd_glyph cmd = {
+            .header = { ZCMD_GLYPH_SZ, sizeof(zcmd_glyph) },
             .c = { font_id, 0, codepoint }    
         };
-        ctx->renderer((zscmd*)&cmd, ctx->user_data);
+        ctx->renderer((zcmd*)&cmd, ctx->user_data);
         if (!_zmap_get(&ctx->glyphs, key, &w))
             return 0;
     }
@@ -319,82 +319,47 @@ zvec2 zui_text_sz(u16 font_id, char *text, i32 len) {
     ret.y = zui_text_axis(font_id, text, len, 1);
     return ret;
 }
-// Report mouse button press [C/S]
-void zui_mouse_down(u16 btn) {
-    if (!client) {
-        ctx->mouse_state |= btn;
-        return;
-    }
-    client->mouse_state |= btn;
-    _zui_send_mouse_data();
-}
-// Report mouse button release [C/S]
-void zui_mouse_up(u16 btn) {
-    if (!client) {
-        ctx->mouse_state &= ~btn;
-        return;
-    }
-    client->mouse_state &= ~btn;
-    _zui_send_mouse_data();
-}
-// Report mouse move [C/S]
-void zui_mouse_move(zvec2 pos) {
-    if (!client) {
-        ctx->mouse_pos = pos;
-        return;
-    }
-    client->mouse_pos = pos;
-    _zui_send_mouse_data();
-}
-//TODO: actually use modifier keys
-//// Report key modifiers shift/alt/etc. (C)
-//void zui_key_mods(u16 mod) {
-//    if (!client) return;
-//    client->modifiers = mod;
-//}
+// Report mouse button press
+void zui_mouse_down(u16 btn) { ctx->mouse_state |= btn; }
+// Report mouse button release
+void zui_mouse_up(u16 btn) { ctx->mouse_state &= ~btn; }
+// Report mouse move
+void zui_mouse_move(zvec2 pos) { ctx->mouse_pos = pos; }
+// Report key modifiers shift/alt/etc.
+void zui_key_mods(u16 mod) { ctx->keyboard_modifiers = mod; }
 
-// Report key press [C/S]
+// Report key press
 void zui_key_char(i32 c) {
-    if (!client) {
-        i32 len = _utf8_len(c);
-        char *utf8 = (char*)_buf_alloc(&ctx->text, len);
-        _utf8_print(utf8, c, len);
-        return;
-    }
-    // send glyph info for all fonts if necessary
-    for (u16 id = 0; id < client->font_cnt; id++) {
-        u32 value;
-        if (_zmap_get(&client->glyphs, _zgc_hash(id, c), &value)) continue;
-        zscmd_glyph glyph = {
-            .header = { ZSCMD_GLYPH, sizeof(zscmd_glyph) },
-            .c = (zglyph_data) {
-                .font_id = id,
-                .c = c,
-                .width = 0
-            }
-        };
-        zui_client_push((zscmd*)&glyph);
-    }
-    zccmd_keys key = {
-        .header = { ZCCMD_KEYS, sizeof(zccmd_keys) },
-        .modifiers = client->keyboard_modifiers,
-        .key = c
-    };
-    client->send((zccmd*)&key, client->user_data);
+    i32 len = _utf8_len(c);
+    char *utf8 = (char*)_buf_alloc(&ctx->text, len);
+    _utf8_print(utf8, c, len);
+    // if (!client) {
+    //     return;
+    // }
+    // // send glyph info for all fonts if necessary
+    // for (u16 id = 0; id < client->font_cnt; id++) {
+    //     u32 value;
+    //     if (_zmap_get(&client->glyphs, _zgc_hash(id, c), &value)) continue;
+    //     zcmd_glyph glyph = {
+    //         .header = { ZCMD_GLYPH_SZ, sizeof(zcmd_glyph) },
+    //         .c = (zglyph_data) {
+    //             .font_id = id,
+    //             .c = c,
+    //             .width = 0
+    //         }
+    //     };
+    //     zui_client_push((zcmd*)&glyph);
+    // }
+    // zccmd_keys key = {
+    //     .header = { ZCCMD_KEYS, sizeof(zccmd_keys) },
+    //     .modifiers = client->keyboard_modifiers,
+    //     .key = c
+    // };
+    // client->send((zccmd*)&key, client->user_data);
 }
-// Report window resize [C/S]
+// Report window resize
 void zui_resize(u16 width, u16 height) {
-    if (!client) {
-        ctx->window_sz = (zvec2) { width, height };
-        return;
-    }
-    if (width == client->window_sz.x && height == client->window_sz.y) return;
-    client->window_sz = (zvec2) { width, height };
-    zccmd_win win = {
-        .header = { ZCCMD_WIN, sizeof(zccmd_win) },
-        .sz = client->window_sz
-    };
-    client->send((zccmd*)&win, client->user_data);
+    ctx->window_sz = (zvec2) { width, height };
 }
 // Returns widget pointer given index
 static inline zw_base *_ui_widget(i32 index) {
@@ -444,9 +409,9 @@ static void *_cont_alloc(i32 id, i32 size) {
 }
 static void *_draw_alloc(u16 id, u16 size, i32 zindex) {
     u64 *index = _buf_alloc(&ctx->zdeque, sizeof(u64));
-    zscmd *ret = (zscmd*)_buf_alloc(&ctx->draw, size);
-    ret->base.id = id;
-    ret->base.bytes = size;
+    zcmd *ret = (zcmd*)_buf_alloc(&ctx->draw, size);
+    ret->id = id;
+    ret->bytes = size;
     // high bytes represent z-index, low bits are index into the pointer
     // we can sort this deque as 64 bit integers: which will sort zindex first, then by insertion order
     *index = ((u64)zindex << 32) | ((u8*)ret - ctx->draw.data);
@@ -460,16 +425,16 @@ static zrect _rect_pad(zrect r, zvec2 padding) {
     return (zrect) { r.x - padding.x, r.y - padding.y, r.w + padding.x * 2, r.h + padding.y * 2 };
 }
 static void _push_rect_cmd(zrect rect, zcolor color, i32 zindex) {
-    zscmd_rect *r = _draw_alloc(ZSCMD_RECT, sizeof(zscmd_rect), zindex);
+    zcmd_rect *r = _draw_alloc(ZCMD_DRAW_RECT, sizeof(zcmd_rect), zindex);
     r->rect = rect;
     r->color = color;
 }
 static void _push_clip_cmd(zrect rect, i32 zindex) {
-    zscmd_clip *r = _draw_alloc(ZSCMD_CLIP, sizeof(zscmd_clip), zindex);
+    zcmd_clip *r = _draw_alloc(ZCMD_DRAW_CLIP, sizeof(zcmd_clip), zindex);
     r->rect = rect;
 }
 static void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex) {
-    zscmd_text *r = _draw_alloc(ZSCMD_TEXT, sizeof(zscmd_text) + len, zindex);
+    zcmd_text *r = _draw_alloc(ZCMD_DRAW_TEXT, sizeof(zcmd_text) + len, zindex);
     r->font_id = font_id;
     r->pos = coord;
     r->color = color;
@@ -681,13 +646,13 @@ void zui_fill(u32 axis) {
 
 u16 zui_new_font(char *family, i32 size) {
     _zmap_set(&ctx->glyphs, _zgc_hash(ctx->font_cnt, 0x1FFFFF), size);
-    i32 bytes = sizeof(zscmd_font) + strlen(family);
-    zscmd_font *font = _alloca(bytes);
-    font->header = (zcmd) { ZSCMD_FONT, bytes };
+    i32 bytes = sizeof(zcmd_reg_font) + strlen(family);
+    zcmd_reg_font *font = _alloca(bytes);
+    font->header = (zcmd) { ZCMD_REG_FONT, bytes };
     font->font_id = ctx->font_cnt;
     font->size = size;
-    memcpy(font->family, family, bytes - sizeof(zscmd_font));
-    ctx->renderer((zscmd*)font, ctx->user_data);
+    memcpy(font->family, family, bytes - sizeof(zcmd_reg_font));
+    ctx->renderer((zcmd_any*)font, ctx->user_data);
     return ctx->font_cnt++;
 }
 
@@ -790,14 +755,16 @@ void zui_render() {
     // despite qsort not being a stable sort, the order of draw cmd creation is preserved due to index being part of each u64
     u64 *deque_reader = (u64*)ctx->zdeque.data;
     _zui_qsort(deque_reader, ctx->zdeque.used / sizeof(u64));
+    zcmd begin = { ZCMD_RENDER_BEGIN, sizeof(zcmd) };
+    ctx->renderer((zcmd_any*)&begin, ctx->user_data);
     while(deque_reader < (u64*)(ctx->zdeque.data + ctx->zdeque.used)) {
         u64 next_pair = *deque_reader++;
         i32 index = next_pair & 0x7FFFFFFF;
-        zscmd *next = (zscmd*)(ctx->draw.data + index);
+        zcmd *next = (zcmd*)(ctx->draw.data + index);
         ctx->renderer(next, ctx->user_data);
     }
-    zcmd draw = { ZSCMD_DRAW, sizeof(zcmd) };
-    ctx->renderer((zscmd*)&draw, ctx->user_data);
+    zcmd end = { ZCMD_RENDER_END, sizeof(zcmd) };
+    ctx->renderer((zcmd_any*)&end, ctx->user_data);
     ctx->prev_mouse_pos = ctx->mouse_pos;
     ctx->prev_mouse_state = ctx->mouse_state;
     ctx->text.used = 0;

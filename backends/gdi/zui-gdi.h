@@ -1,9 +1,27 @@
+
+
+
+
+#ifdef ZUI_IMPL
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdlib.h>
 #include "../../src/zui.h"
+#else
+extern zimpl zui_gdi;
+#endif
+typedef struct zui_gdi_args {
+    i32 width;
+    i32 height;
+    char *title;
+    zui_init_fn init;    
+    zui_frame_fn frame;
+    zui_close_fn close;
+    bool tick_manually;
+} zui_gdi_args;
 
-typedef struct zui_gdi {
+#ifdef ZUI_IMPL
+typedef struct zui_gdi_ctx {
 	HDC memory_dc;
 	HDC window_dc;
     HFONT font_list[10];
@@ -12,11 +30,16 @@ typedef struct zui_gdi {
 	i32 width;
 	i32 height;
 	bool running;
-} zui_gdi;
+} zui_gdi_ctx;
+static zui_gdi_ctx app_ctx;
 
-static zui_gdi app_ctx;
+void gdi_renderer(zcmd_any *cmd, void *user_data);
+zimpl zui_gdi = {
+    .impl_data = &app_ctx,
+    .renderer = gdi_renderer,
+};
 
-static void __zapp_recv_clipboard(char *text, i32 len) {
+static void _win32_set_clipboard(char *text, i32 len) {
 	if (!OpenClipboard(0)) return;
 	do {
 		i32 wsize = MultiByteToWideChar(CP_UTF8, 0, text, len, 0, 0);
@@ -34,8 +57,10 @@ static void __zapp_recv_clipboard(char *text, i32 len) {
 	CloseClipboard();
 }
 
-static void __zapp_send_clipboard() {
-	if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(0)) return;
+static char *_win32_get_clipboard() {
+    static char *clipboard = 0;
+    bool success = false;
+	if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(0)) return "";
 	do {
 		HGLOBAL mem = GetClipboardData(CF_UNICODETEXT);
 		if (!mem) break;
@@ -46,17 +71,19 @@ static void __zapp_send_clipboard() {
 		do {
 			i32 utf8size = WideCharToMultiByte(CP_UTF8, 0, wstr, wsize, 0, 0, 0, 0);
 			if (!utf8size) break;
-			char *utf8 = _alloca(utf8size);
-			WideCharToMultiByte(CP_UTF8, 0, wstr, wsize, utf8, utf8size, 0, 0);
-			while(*utf8)
-                zui_key_char(*utf8++);
+            if(clipboard) free(clipboard);
+            clipboard = malloc(utf8size + 1);
+			WideCharToMultiByte(CP_UTF8, 0, wstr, wsize, clipboard, utf8size, 0, 0);
+            clipboard[utf8size] = 0;
+            success = true;
 		} while (0);
 		GlobalUnlock(mem);
 	} while (0);
 	CloseClipboard();
+    return success ? clipboard : "";
 }
 
-static LRESULT CALLBACK __zapp_window_event(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
+static LRESULT CALLBACK _win32_event(HWND wnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
 	switch (msg)
 	{
@@ -82,21 +109,28 @@ static LRESULT CALLBACK __zapp_window_event(HWND wnd, UINT msg, WPARAM wparam, L
 		return 0;
 	}
 	case WM_KEYDOWN: {
-		int ctrl = GetKeyState(VK_CONTROL) & (1 << 15);
 		switch (wparam) {
-		//case 'C': if (ctrl) zui_input_copy(__zapp_recv_clipboard); return 0;
-		case 'V': if (ctrl) __zapp_send_clipboard(); return 0;
-		//case 'A': if (ctrl) zui_input_select(); return 0;
-		case VK_TAB: zui_key_char('\t'); return 0;
-		case VK_BACK: zui_key_char('\b'); return 0;
-		case VK_DELETE: zui_key_char(127); return 0;
-		case VK_LEFT: zui_key_char(17); return 0;
-		case VK_RIGHT: zui_key_char(18); return 0;
-		case VK_UP: zui_key_char(19); return 0;
-		case VK_DOWN: zui_key_char(20); return 0;
+		case VK_TAB: zui_key_char('\t'); break;
+		case VK_BACK: zui_key_char('\b'); break;
+		case VK_DELETE: zui_key_char(127); break;
+		case VK_LEFT: zui_key_char(17); break;
+		case VK_RIGHT: zui_key_char(18); break;
+		case VK_UP: zui_key_char(19); break;
+		case VK_DOWN: zui_key_char(20); break;
 		}
-	} break;
-	case WM_CHAR: if (wparam >= 32 && wparam <= 127) { zui_key_char((char)wparam); return 0; } break;
+	}
+	case WM_KEYUP: {
+        u16 mod = 0;
+        mod |= (GetKeyState(VK_LCONTROL) >> 15) * ZK_L_CTRL;
+        mod |= (GetKeyState(VK_RCONTROL) >> 15) * ZK_R_CTRL;
+        mod |= (GetKeyState(VK_LSHIFT) >> 15) * ZK_L_SHIFT;
+        mod |= (GetKeyState(VK_RSHIFT) >> 15) * ZK_R_SHIFT;
+        mod |= (GetKeyState(VK_LMENU) >> 15) * ZK_L_ALT;
+        mod |= (GetKeyState(VK_RMENU) >> 15) * ZK_R_ALT;
+        mod |= (GetKeyState(VK_CAPITAL) & 1) * ZK_CAPSLOCK;
+        zui_key_mods(mod);
+    } break;
+	case WM_CHAR: if (wparam >= 32 && wparam <= 127) { zui_key_char((i32)wparam); return 0; } break;
 	case WM_RBUTTONDOWN: zui_mouse_down(ZM_RIGHT_CLICK); SetCapture(wnd);  return 0;
 	case WM_RBUTTONUP:   zui_mouse_up(ZM_RIGHT_CLICK); ReleaseCapture();   return 0;
 	case WM_LBUTTONDOWN: zui_mouse_down(ZM_LEFT_CLICK); SetCapture(wnd);   return 0;
@@ -109,31 +143,46 @@ static LRESULT CALLBACK __zapp_window_event(HWND wnd, UINT msg, WPARAM wparam, L
 	return DefWindowProcW(wnd, msg, wparam, lparam);
 }
 
-void gdi_renderer(zscmd *cmd, void *user_data) {
+void gdi_renderer(zcmd_any *cmd, void *user_data) {
     switch(cmd->base.id) {
-        case ZSCMD_INIT: break;
-        case ZSCMD_DRAW:
+        case ZCMD_INIT: break;
+        case ZCMD_RENDER_BEGIN:
+            // set pen and brush for drawing
             SelectObject(app_ctx.memory_dc, GetStockObject(DC_PEN));
             SelectObject(app_ctx.memory_dc, GetStockObject(DC_BRUSH));
-            zui_render();
+            break;
+        case ZCMD_RENDER_END:
+            // copy data to screen
             BitBlt(app_ctx.window_dc, 0, 0, app_ctx.width, app_ctx.height, app_ctx.memory_dc, 0, 0, SRCCOPY);
             break;
-        case ZSCMD_COPY: break;
-        case ZSCMD_FONT: {
+        case ZCMD_GET_CLIPBOARD: {
+            cmd->get_clipboard.response = _win32_get_clipboard();
+        } break;
+        case ZCMD_SET_CLIPBOARD: {
+            i32 size = cmd->base.bytes - sizeof(zcmd_set_clipboard);
+            _win32_set_clipboard(cmd->set_clipboard.text, size);
+        } break;
+        case ZCMD_REG_FONT: {
             TEXTMETRICW metric;
             HDC dc = CreateCompatibleDC(0);
             HANDLE handle = CreateFontA(cmd->font.size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, cmd->font.family);
-            SelectObject(dc, handle);
-            GetTextMetricsW(dc, &metric);
-            app_ctx.font_list[cmd->font.font_id] = handle;
+            if(handle) {
+                SelectObject(dc, handle);
+                GetTextMetricsW(dc, &metric);
+                app_ctx.font_list[cmd->font.font_id] = handle;
+            }
+            cmd->font.response = (handle != 0);
         } break;
-        case ZSCMD_GLYPH: break;
-		case ZSCMD_CLIP: {
+        case ZCMD_GLYPH_SZ: {
+            
+
+        } break;
+		case ZCMD_DRAW_CLIP: {
 			zrect clip = cmd->clip.rect;
 			SelectClipRgn(app_ctx.memory_dc, 0);
 			IntersectClipRect(app_ctx.memory_dc, clip.x, clip.y, clip.x + clip.w, clip.y + clip.h);
 		} break;
-		case ZSCMD_RECT: {
+		case ZCMD_DRAW_RECT: {
 			zcolor c = cmd->rect.color;
 			zrect r = cmd->rect.rect;
 			COLORREF color = c.r | (c.g << 8) | (c.b << 16);
@@ -142,16 +191,14 @@ void gdi_renderer(zscmd *cmd, void *user_data) {
 			SetBkColor(app_ctx.memory_dc, color);
 			ExtTextOutW(app_ctx.memory_dc, 0, 0, ETO_OPAQUE, &rect, NULL, 0, NULL);
 		} break;
-		case ZSCMD_TEXT: {
-            int len = cmd->base.bytes - sizeof(zscmd_text);
+		case ZCMD_DRAW_TEXT: {
+            int len = cmd->base.bytes - sizeof(zcmd_text);
 			int wsize = MultiByteToWideChar(CP_UTF8, 0, cmd->text.text, len, NULL, 0);
 			WCHAR *wstr = (WCHAR*)_alloca(wsize * sizeof(wchar_t));
 			MultiByteToWideChar(CP_UTF8, 0, cmd->text.text, len, wstr, wsize);
-
 			zcolor c = cmd->text.color;
 			COLORREF color = c.r | (c.g << 8) | (c.b << 16);
 			SetTextColor(app_ctx.memory_dc, color);
-
 			SetBkMode(app_ctx.memory_dc, TRANSPARENT);
 			SelectObject(app_ctx.memory_dc, app_ctx.font_list[cmd->text.font_id]);
 			ExtTextOutW(app_ctx.memory_dc, cmd->text.pos.x, cmd->text.pos.y, 0, NULL, wstr, wsize, NULL);
@@ -179,9 +226,7 @@ void gdi_renderer(zscmd *cmd, void *user_data) {
 // 	free(gdifont);
 // }
 
-void zapp_launch(zapp_desc *description) {
-	//GdiFont* font;
-
+void setup_gdi() {
 	app_ctx.width = description->width;
 	app_ctx.height = description->height;
 	app_ctx.running = true;
@@ -253,4 +298,4 @@ void zapp_launch(zapp_desc *description) {
 void zapp_close() {
 	app_ctx.running = false;
 }
-
+#endif

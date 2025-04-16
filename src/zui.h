@@ -230,7 +230,7 @@ typedef struct zw_label  { Z_WIDGET; char *text;  i32 len; } zw_label;
 #ifdef ZUI_UTF8
 i32  utf8_val(char *text, u32 codepoint);
 i32  utf8_len(u32 codepoint);
-void utf8_print(char *text, i32 len);
+void utf8_print(char *text, u32 codepoint, i32 len);
 #endif
 
 #ifdef ZUI_BUF
@@ -258,6 +258,7 @@ bool zmap_get(zmap *map, u32 key, u32 *value);
 
 
 // this sends a ZCMD_TICK command to the renderer function
+void zui_log(char *fmt, ...);
 void zui_tick(bool blocking);
 
 void zui_mouse_down(u16 btn);

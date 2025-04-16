@@ -11,8 +11,6 @@
 #define FOR_N_SIBLINGS(ui, sibling, n) for(i32 i = 0; sibling != (zw_base*)ui && i < n; sibling = _ui_next(sibling), i++)
 #define SWAP(type, a, b) { type tmp = a; a = b; b = tmp; }
 
-static void _log(char *fmt, ...);
-
 // Represents a registry entry (defines functions for a widget-id)
 typedef struct zui_type {
     u16  (*size)(void*, bool, u16);
@@ -30,7 +28,7 @@ typedef struct zui_buf {
 static void _buf_init(zui_buf *l, i32 cap, i32 alignment) {
     // get log2 of cap
     if (alignment & (alignment - 1))
-        _log("ERROR: Buffer alignment must be a power of two");
+        zui_log("ERROR: Buffer alignment must be a power of two");
     union { f32 f; i32 i; } tmp = { .f = (float)(cap - 1) };
     l->cap = (tmp.i >> 23) - 126;
     l->used = 0;
@@ -121,7 +119,7 @@ static u32 _zs_hash(u16 widget_id, u16 style_id) {
 
 static u8 _utf8_masks[] = { 0, 0x7F, 0x1F, 0xF, 0x7 };
 // returns the byte length of the first utf8 character in <text> and puts the unicode value in <codepoint>
-i32 _utf8_val(char *text, u32 *codepoint) {
+i32 utf8_val(char *text, u32 *codepoint) {
     static u8 utf8len[] = { 1,1,1,1,1,1,1,1,0,0,0,0,2,2,3,4 };
     i32 len = utf8len[(u8)(*text) >> 4];
     *codepoint = text[0] & _utf8_masks[len];
@@ -130,7 +128,7 @@ i32 _utf8_val(char *text, u32 *codepoint) {
     return len;
 }
 // returns the utf8 byte length of a given codepoint
-i32 _utf8_len(u32 codepoint) {
+i32 utf8_len(u32 codepoint) {
     if (codepoint < 0) return 0;
     if (codepoint < 0x80) return 1;
     if (codepoint < 0x800) return 2;
@@ -139,7 +137,7 @@ i32 _utf8_len(u32 codepoint) {
     return 0;
 }
 // fills text with the utf8 encoding of <codepoint> given its utf8 byte length <len>
-void _utf8_print(char *text, u32 codepoint, i32 len) {
+void utf8_print(char *text, u32 codepoint, i32 len) {
     for (i32 i = len - 1; i > 0; codepoint >>= 6)
         text[i--] = 0xC0 | (codepoint & 0x3F);
     text[0] = codepoint & _utf8_masks[len];
@@ -280,7 +278,7 @@ static zui_ctx *ctx = 0;
 // }
 
 // Logs using specified log function
-static void _log(char *fmt, ...) {
+void zui_log(char *fmt, ...) {
     if (!ctx) return;
     void *user_data = ctx->user_data;
     zui_log_fn fn = ctx->log;
@@ -297,7 +295,7 @@ u16 zui_text_axis(u16 font_id, char *text, i32 len, bool axis) {
     u32 sz = 0;
     if (axis) return _zmap_get(&ctx->glyphs, _zgc_hash(font_id, 0x1FFFFF), &sz) ? sz : 0;
     for (u32 bw, w = 0, i = 0; i < len; i += bw, sz += w) {
-        bw = _utf8_val(text + i, &codepoint);
+        bw = utf8_val(text + i, &codepoint);
         if (!bw) return 0;
         u32 key = _zgc_hash(font_id, codepoint);
         if (_zmap_get(&ctx->glyphs, key, &w))
@@ -307,7 +305,7 @@ u16 zui_text_axis(u16 font_id, char *text, i32 len, bool axis) {
             .header = { ZCMD_GLYPH_SZ, sizeof(zcmd_glyph) },
             .c = { font_id, 0, codepoint }    
         };
-        ctx->renderer((zcmd*)&cmd, ctx->user_data);
+        ctx->renderer((zcmd_any*)&cmd, ctx->user_data);
         if (!_zmap_get(&ctx->glyphs, key, &w))
             return 0;
     }
@@ -330,9 +328,9 @@ void zui_key_mods(u16 mod) { ctx->keyboard_modifiers = mod; }
 
 // Report key press
 void zui_key_char(i32 c) {
-    i32 len = _utf8_len(c);
+    i32 len = utf8_len(c);
     char *utf8 = (char*)_buf_alloc(&ctx->text, len);
-    _utf8_print(utf8, c, len);
+    utf8_print(utf8, c, len);
     // if (!client) {
     //     return;
     // }
@@ -522,12 +520,12 @@ bool _ui_clicked(i32 buttons) {
 }
 
 void _ui_print(zw_base *cmd, int indent) {
-    _log("%04x | ", _ui_index(cmd));
+    zui_log("%04x | ", _ui_index(cmd));
     for (i32 i = 0; i < indent; i++)
-        _log("    ");    
+        zui_log("    ");    
     zrect b = cmd->bounds;
     zrect u = cmd->used;
-    _log("(id: %d, next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", cmd->id, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
+    zui_log("(id: %d, next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", cmd->id, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
     FOR_CHILDREN(cmd)
         _ui_print(child, indent + 1);
 }
@@ -589,7 +587,7 @@ void _ui_draw(zw_base *ui) {
         for (i32 i = 0; i < c->style_edits; i++) {
             u32 value, key = _zs_hash(edits[i].widget_id, edits[i].style_id);
             if (!_zmap_get(&ctx->style, key, &value))
-                _log("WARNING: No default style for widget-id:%d,style-id:%d\n", edits[i].widget_id, edits[i].style_id);
+                zui_log("WARNING: No default style for widget-id:%d,style-id:%d\n", edits[i].widget_id, edits[i].style_id);
             _zmap_set(&ctx->style, key, edits[i].value.u);
             edits[i].value.u = value; // save previous value
         }
@@ -624,7 +622,7 @@ static zvec2 _ui_sz_auto(zvec2 bounds, zvec2 auto_sz) {
 }
 
 void zui_print_tree() {
-    _log("printing tree...\n");
+    zui_log("printing tree...\n");
     _ui_print(_ui_widget(0), 0);
 }
 
@@ -721,7 +719,7 @@ void zui_default_style(u32 widget_id, ...) {
 }
 static void _zui_get_style(u16 widget_id, u16 style_id, void *ptr) {
     if(!_zmap_get(&ctx->style, _zs_hash(widget_id, style_id), (u32*)ptr))
-        _log("No style exists for widget:%d,style:%d\n", widget_id, style_id);
+        zui_log("No style exists for widget:%d,style:%d\n", widget_id, style_id);
 }
 zcolor zui_stylec(u16 widget_id, u16 style_id) { zcolor ret; _zui_get_style(widget_id, style_id, &ret); return ret; }
 zvec2  zui_stylev(u16 widget_id, u16 style_id) { zvec2  ret; _zui_get_style(widget_id, style_id, &ret); return ret; }
@@ -755,16 +753,16 @@ void zui_render() {
     // despite qsort not being a stable sort, the order of draw cmd creation is preserved due to index being part of each u64
     u64 *deque_reader = (u64*)ctx->zdeque.data;
     _zui_qsort(deque_reader, ctx->zdeque.used / sizeof(u64));
-    zcmd begin = { ZCMD_RENDER_BEGIN, sizeof(zcmd) };
-    ctx->renderer((zcmd_any*)&begin, ctx->user_data);
+    zcmd_any begin = { .base = { ZCMD_RENDER_BEGIN, sizeof(zcmd) } };
+    ctx->renderer(&begin, ctx->user_data);
     while(deque_reader < (u64*)(ctx->zdeque.data + ctx->zdeque.used)) {
         u64 next_pair = *deque_reader++;
         i32 index = next_pair & 0x7FFFFFFF;
-        zcmd *next = (zcmd*)(ctx->draw.data + index);
+        zcmd_any *next = (zcmd_any*)(ctx->draw.data + index);
         ctx->renderer(next, ctx->user_data);
     }
-    zcmd end = { ZCMD_RENDER_END, sizeof(zcmd) };
-    ctx->renderer((zcmd_any*)&end, ctx->user_data);
+    zcmd_any end = { .base = { ZCMD_RENDER_END, sizeof(zcmd) } };
+    ctx->renderer(&end, ctx->user_data);
     ctx->prev_mouse_pos = ctx->mouse_pos;
     ctx->prev_mouse_state = ctx->mouse_state;
     ctx->text.used = 0;
@@ -773,25 +771,25 @@ void zui_render() {
     ctx->ui.used = 0;
 }
 
-void zui_push(zccmd *cmd) {
-    switch (cmd->base.id) {
-    case ZCCMD_MOUSE:
-        ctx->mouse_pos = cmd->mouse.pos;
-        ctx->mouse_state = cmd->mouse.state;
-        break;
-    case ZCCMD_KEYS: {
-        i32 len = _utf8_len(cmd->keys.key);
-        char *utf8 = (char*)_buf_alloc(&ctx->text, len);
-        _utf8_print(utf8, cmd->keys.key, len);
-    } break;
-    case ZCCMD_GLYPH:
-        _zmap_set(&ctx->glyphs, _zgc_hash(cmd->glyph.c.font_id, cmd->glyph.c.c), cmd->glyph.c.width);
-        break;
-    case ZCCMD_WIN:
-        ctx->window_sz = cmd->win.sz;
-        break;
-    }
-}
+// void zui_push(zccmd *cmd) {
+//     switch (cmd->base.id) {
+//     case ZCCMD_MOUSE:
+//         ctx->mouse_pos = cmd->mouse.pos;
+//         ctx->mouse_state = cmd->mouse.state;
+//         break;
+//     case ZCCMD_KEYS: {
+//         i32 len = _utf8_len(cmd->keys.key);
+//         char *utf8 = (char*)_buf_alloc(&ctx->text, len);
+//         _utf8_print(utf8, cmd->keys.key, len);
+//     } break;
+//     case ZCCMD_GLYPH:
+//         _zmap_set(&ctx->glyphs, _zgc_hash(cmd->glyph.c.font_id, cmd->glyph.c.c), cmd->glyph.c.width);
+//         break;
+//     case ZCCMD_WIN:
+//         ctx->window_sz = cmd->win.sz;
+//         break;
+//     }
+// }
 
 void zui_blank() {
     _ui_alloc(ZW_BLANK, sizeof(zw_base));
@@ -1307,7 +1305,7 @@ static u16 _zui_grid_size(zw_grid *grid, bool axis, u16 bound) {
     }
     _zui_qsort((u64*)children, grid->rows * grid->cols);
     if (n != grid->rows * grid->cols)
-        _log("ERR: grid has wrong # of children\r\n");
+        zui_log("ERR: grid has wrong # of children\r\n");
     u16 *sizes = _alloca(sizeof(u16) * (grid->rows + grid->cols));
     memset(sizes, 0, sizeof(u16) * (grid->rows + grid->cols));
     u16 non_percent = 0;
@@ -1572,6 +1570,9 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
         ZSC_HOVERED,    (zcolor) { 40, 40, 40, 255 },
         ZSV_PADDING,    (zvec2)  { 15, 5 },
         ZS_DONE);
+
+    zcmd start = { .id = ZCMD_INIT, .bytes = sizeof(zcmd) };
+    fn((zcmd_any*)&start, user_data);
 }
 
 void zui_close() {

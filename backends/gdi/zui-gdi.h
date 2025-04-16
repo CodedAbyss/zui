@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdlib.h>
+#define ZUI_UTF8
 #include "../../src/zui.h"
 #else
 void gdi_renderer(zcmd_any *cmd, void *user_data);
@@ -90,6 +91,7 @@ static LRESULT CALLBACK _win32_event(HWND wnd, UINT msg, WPARAM wparam, LPARAM l
 		app_ctx.width = width;
 		app_ctx.height = height;
 		SelectObject(app_ctx.memory_dc, app_ctx.bitmap);
+        zui_resize(width, height);
 	} break;
 	case WM_PAINT: {
 		PAINTSTRUCT paint;
@@ -132,7 +134,34 @@ static LRESULT CALLBACK _win32_event(HWND wnd, UINT msg, WPARAM wparam, LPARAM l
 
 	return DefWindowProcW(wnd, msg, wparam, lparam);
 }
-
+void _win32_tick(zui_gdi_args *args, bool blocking) {
+    if(!app_ctx.running) return;
+    MSG msg;
+    static u32 needs_refresh = 0;
+    if (needs_refresh == 0) {
+        if (GetMessageW(&msg, NULL, 0, 0) <= 0)
+            app_ctx.running = false;
+        else {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        needs_refresh = 1;
+    }
+    else needs_refresh = 0;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT)
+            app_ctx.running = false;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+        needs_refresh = 1;
+    }    
+    args->frame(0);
+}
+void _win32_close(zui_gdi_args *args) {
+    args->close(0);
+    ReleaseDC(app_ctx.wnd, app_ctx.window_dc);
+    UnregisterClassW(app_ctx.wnd_class.lpszClassName, app_ctx.wnd_class.hInstance);
+}
 void _win32_setup(zui_gdi_args *args) {
 	app_ctx.width = args->width;
 	app_ctx.height = args->height;
@@ -171,34 +200,13 @@ void _win32_setup(zui_gdi_args *args) {
 	app_ctx.bitmap = CreateCompatibleBitmap(app_ctx.window_dc, args->width, args->height);
 	app_ctx.memory_dc = CreateCompatibleDC(app_ctx.window_dc);
 	SelectObject(app_ctx.memory_dc, app_ctx.bitmap);
-}
-void _win32_tick(zui_gdi_args *args, bool blocking) {
-    if(!app_ctx.running) return;
-    MSG msg;
-    static u32 needs_refresh = 0;
-    if (needs_refresh == 0) {
-        if (GetMessageW(&msg, NULL, 0, 0) <= 0)
-            app_ctx.running = false;
-        else {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        needs_refresh = 1;
+    zui_resize(args->width, args->height);
+    args->init(0);
+    if(!args->tick_manually) {
+        while(app_ctx.running)
+            _win32_tick(args, true);
+        _win32_close(args);
     }
-    else needs_refresh = 0;
-    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT)
-            app_ctx.running = false;
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-        needs_refresh = 1;
-    }    
-    args->frame(0);
-}
-void _win32_close(zui_gdi_args *args) {
-    args->close(0);
-    ReleaseDC(app_ctx.wnd, app_ctx.window_dc);
-    UnregisterClassW(app_ctx.wnd_class.lpszClassName, app_ctx.wnd_class.hInstance);
 }
 // TODO:
 // We can allow delayed responses to the renderer (in cases like network latency)
@@ -258,8 +266,8 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
             u16 font_id = cmd->glyph.c.font_id;
             WCHAR wstr[4]; // should be more than enough for a utf8 codepoint
             char text[4];
-            i32 len = _utf8_len(cmd->glyph.c.c);
-            _utf8_print(text, cmd->glyph.c.c, len);
+            i32 len = utf8_len(cmd->glyph.c.c);
+            utf8_print(text, cmd->glyph.c.c, len);
             SIZE size;
             i32 wsize = MultiByteToWideChar(CP_UTF8, 0, text, len, wstr, 4); 
             if (GetTextExtentPoint32W(app_ctx.font_dc[font_id], wstr, wsize, &size))
@@ -289,7 +297,7 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
 			SetBkMode(app_ctx.memory_dc, TRANSPARENT);
 			SelectObject(app_ctx.memory_dc, app_ctx.font_list[cmd->text.font_id]);
 			ExtTextOutW(app_ctx.memory_dc, cmd->text.pos.x, cmd->text.pos.y, 0, NULL, wstr, wsize, NULL);
-		} break;
-        
+		} break;    
+    }
 }
 #endif

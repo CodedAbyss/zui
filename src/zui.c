@@ -298,16 +298,19 @@ u16 zui_text_axis(u16 font_id, char *text, i32 len, bool axis) {
         bw = utf8_val(text + i, &codepoint);
         if (!bw) return 0;
         u32 key = _zgc_hash(font_id, codepoint);
-        if (_zmap_get(&ctx->glyphs, key, &w))
+        if (_zmap_get(&ctx->glyphs, key, &w)) {
+            //zui_log("Char %c: %d\n", codepoint, w);
             continue;
+        }
         // request renderer for glyph width
         zcmd_glyph cmd = {
             .header = { ZCMD_GLYPH_SZ, sizeof(zcmd_glyph) },
             .c = { font_id, 0, codepoint }    
         };
         ctx->renderer((zcmd_any*)&cmd, ctx->user_data);
-        if (!_zmap_get(&ctx->glyphs, key, &w))
-            return 0;
+        _zmap_set(&ctx->glyphs, key, cmd.c.width);
+        w = cmd.c.width;
+        //zui_log("Char %c: %d\n", codepoint, w);
     }
     return sz;
 }
@@ -533,7 +536,7 @@ void _ui_print(zw_base *cmd, int indent) {
 u16 _ui_sz(zw_base *ui, bool axis, u16 bound) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
     u16 sz = type.size(ui, axis, bound);
-    ui->used.pos[axis] = sz;
+    ui->used.sz[axis] = sz;
     ui->bounds.sz[axis] = bound == Z_AUTO ? ui->used.sz[axis] : bound;
     return ui->bounds.sz[axis];
 }
@@ -592,11 +595,7 @@ void _ui_draw(zw_base *ui) {
             edits[i].value.u = value; // save previous value
         }
     }
-    //if(ui->flags & ZF_PARENT)
-    //    _push_clip_cmd(ui->bounds, ui->zindex);
     type.draw(ui);
-    if (_ui_hovered(ui))
-        _push_rect_cmd(ui->used, (zcolor) { 255, 0, 0, 50 }, ui->zindex);
     if (~ui->flags & ZF_CONTAINER) return;
     // restore original style
     for (i32 i = 0; i < c->style_edits; i++)
@@ -759,7 +758,7 @@ void zui_render() {
         u64 next_pair = *deque_reader++;
         i32 index = next_pair & 0x7FFFFFFF;
         zcmd_any *next = (zcmd_any*)(ctx->draw.data + index);
-        ctx->renderer(next, ctx->user_data);
+        ctx->renderer(next, ctx->user_data); 
     }
     zcmd_any end = { .base = { ZCMD_RENDER_END, sizeof(zcmd) } };
     ctx->renderer(&end, ctx->user_data);
@@ -846,7 +845,8 @@ void zui_label(const char *text) {
 }
 
 static u16 _zui_label_size(zw_label *data, bool axis, u16 bound) {
-    return zui_text_axis(ctx->font_id, data->text, data->len, axis);
+    u16 tmp = zui_text_axis(ctx->font_id, data->text, data->len, axis);
+    return tmp;
 }
 
 static void _zui_label_draw(zw_label *data) {

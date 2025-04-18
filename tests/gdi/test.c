@@ -2,25 +2,20 @@
 #include "../../backends/gdi/zui-gdi.h"
 #include <stdio.h>
 
-
-
 void init(void *user_data) {
     zui_log("init\n");
-
     zui_new_font("Consolas", 16);
-
 }
 
 void frame(void *user_data) {
     zui_window(); {
         zui_label("Hello!");
     } zui_end();
-
     zui_render();
 }
 
 void close(void *user_data) {
-
+    printf("close\n");
 }
 
 void LOG(char *fmt, va_list args, void *user_data) { vprintf(fmt, args); }
@@ -34,6 +29,5 @@ i32 main(i32 argc, char **argv) {
         .frame = frame,
         .close = close
     });
-    printf("hmm\n");
 }
 

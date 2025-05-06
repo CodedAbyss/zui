@@ -1,9 +1,13 @@
+#ifndef ZUI_INCLUDED
+#error Must include zui.h before zui-gdi.h
+#else
 #ifdef ZUI_IMPL
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdlib.h>
-#define ZUI_UTF8
-#include "../../src/zui.h"
+#ifndef ZUI_UTF8
+#error Must Define ZUI_UTF8. GDI backend relies on utf8 functions.
+#endif
 #else
 void gdi_renderer(zcmd_any *cmd, void *user_data);
 #endif
@@ -298,6 +302,16 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
 			SelectObject(app_ctx.memory_dc, app_ctx.font_list[cmd->text.font_id]);
 			ExtTextOutW(app_ctx.memory_dc, cmd->text.pos.x, cmd->text.pos.y, 0, NULL, wstr, wsize, NULL);
 		} break;    
+        case ZCMD_DRAW_BEZIER: {
+            int cnt = (cmd->base.bytes - sizeof(zcmd_bezier)) / sizeof(zvec2);
+            POINT *points = _alloca(sizeof(POINT) * cnt);
+            for(i32 i = 0; i < cnt; i++) {
+                zvec2 v = cmd->bezier.points[i];
+                points[i] = (POINT) { v.x, v.y };
+            }
+            PolyBezier(app_ctx.memory_dc, points, cnt);
+        } break;
     }
 }
+#endif
 #endif

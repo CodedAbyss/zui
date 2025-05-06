@@ -135,6 +135,7 @@ enum ZUI_CMDS {
     ZCMD_DRAW_CLIP,
     ZCMD_DRAW_RECT,
     ZCMD_DRAW_TEXT,
+    ZCMD_DRAW_BEZIER,
     ZCMD_POLL_EVENTS,
         // _ZCMD_KEYCODE,   // zui_key_char
         // _ZCMD_MOUSE,     // zcmd *zui_mouse_*
@@ -150,6 +151,7 @@ typedef struct zglyph_data { u16 font_id; u16 width; i32 c; } zglyph_data;
 typedef struct zcmd_clip { zcmd header; zrect rect; } zcmd_clip;                                          // set clip rect
 typedef struct zcmd_rect { zcmd header; zrect rect; zcolor color; } zcmd_rect;                            // draw rect
 typedef struct zcmd_text { zcmd header; zvec2 pos;  zcolor color; u16 font_id; char text[0]; } zcmd_text; // draw text
+typedef struct zcmd_bezier { zcmd header; zcolor color; zvec2 points[0]; } zcmd_bezier; // draw bezier
 typedef struct zcmd_get_clipboard { zcmd header; char *response; } zcmd_get_clipboard;                    // get clipboard
 typedef struct zcmd_set_clipboard { zcmd header; char text[0]; } zcmd_set_clipboard;                      // set clipboard
 typedef struct zcmd_reg_font { zcmd header; u16 font_id; u16 size; bool response; char family[0]; } zcmd_reg_font;               // register font
@@ -159,6 +161,7 @@ typedef union {
     zcmd_clip clip;
     zcmd_rect rect;
     zcmd_text text;
+    zcmd_bezier bezier;
     zcmd_reg_font font;
     zcmd_glyph glyph;
     zcmd_set_clipboard set_clipboard;
@@ -206,7 +209,8 @@ enum ZUI_WIDGETS {
     ZW_TEXT,
     ZW_COMBO,
     ZW_GRID,
-    ZW_TABSET
+    ZW_TABSET,
+    ZW_LAST
 };
 
 typedef struct zw_base { u16 id, bytes; i32 next, zindex, flags; zrect bounds; zrect used; } zw_base;
@@ -227,6 +231,43 @@ typedef struct zw_check  { Z_WIDGET; u8 *state; } zw_check;
 typedef struct zw_combo  { Z_WIDGET; char *tooltip, *csoptions; i32 *state; } zw_combo;
 typedef struct zw_label  { Z_WIDGET; char *text;  i32 len; } zw_label;
 
+#ifdef ZUI_DEV
+zw_base *_ui_widget(i32 index);
+i32 _ui_index(zw_base *ui);
+zw_base *_ui_next(zw_base *widget);
+void *_ui_alloc(i32 id, i32 size);
+void *_cont_alloc(i32 id, i32 size);
+void *_draw_alloc(u16 id, u16 size, i32 zindex);
+zrect _rect_add(zrect a, zrect b);
+zrect _rect_pad(zrect r, zvec2 padding);
+void _push_rect_cmd(zrect rect, zcolor color, i32 zindex);
+void _push_clip_cmd(zrect rect, i32 zindex);
+void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex);
+void _push_bezier_cmd(i32 cnt, zvec2 *points, zcolor color, i32 zindex);
+zvec2 _vec_max(zvec2 a, zvec2 b);
+zvec2 _vec_min(zvec2 a, zvec2 b);
+zvec2 _vec_add(zvec2 a, zvec2 b);
+bool _vec_within(zvec2 v, zrect bounds);
+bool _rect_within(zrect r, zrect bounds);
+bool _rect_intersect(zrect a, zrect b, zrect *intersect);
+void _rect_justify(zrect *used, zrect bounds, i32 justification);
+void _ui_schedule_focus(zw_base *widget);
+zw_base *_ui_find_with_flag(zw_base *start, u32 flags);
+zw_base *_ui_get_child(zw_base *ui);
+bool _ui_pressed(i32 buttons);
+bool _ui_dragged(i32 buttons);
+bool _ui_clicked(i32 buttons);
+void _ui_print(zw_base *cmd, int indent);
+u16 _ui_sz(zw_base *ui, bool axis, u16 bound);
+bool _ui_is_child(zw_base *container, zw_base *other);
+bool _ui_hovered(zw_base *ui);
+bool _ui_cont_hovered(zw_base *ui);
+bool _ui_focused(zw_base *ui);
+bool _ui_cont_focused(zw_base *ui);
+void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex);
+void _ui_draw(zw_base *ui);
+#endif
+
 #ifdef ZUI_UTF8
 i32  utf8_val(char *text, u32 codepoint);
 i32  utf8_len(u32 codepoint);
@@ -234,6 +275,13 @@ void utf8_print(char *text, u32 codepoint, i32 len);
 #endif
 
 #ifdef ZUI_BUF
+typedef struct zui_buf {
+    i32 used;
+    u16 cap;
+    u16 alignsub1;
+    u8 *data;
+} zui_buf;
+void zbuf_resize(zui_buf *l);
 void zbuf_init(zui_buf *l, i32 cap, i32 alignment);
 void *zbuf_alloc(zui_buf *l, i32 size);
 i32  zbuf_align(zui_buf *l, i32 n);
@@ -257,8 +305,12 @@ bool zmap_get(zmap *map, u32 key, u32 *value);
 // void zui_client_render();
 
 
-// this sends a ZCMD_TICK command to the renderer function
+void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb);
+i32 zui_new_id();
+
 void zui_log(char *fmt, ...);
+
+// this sends a ZCMD_TICK command to the renderer function
 void zui_tick(bool blocking);
 
 void zui_mouse_down(u16 btn);

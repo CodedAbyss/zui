@@ -1,3 +1,4 @@
+#define ZUI_DEV
 #include "zui.h"
 #include <stdlib.h>
 #include <string.h>
@@ -6,14 +7,10 @@
 #define max(a, b) ((a) > (b) ? (a) : (b))
 
 //#define assert(bool, msg) { if(!(bool)) printf(msg); exit(1); }
-#define FOR_CHILDREN(ui) for(zw_base* child = _ui_get_child((zw_base*)ui); child != (zw_base*)ui; child = _ui_next(child))
-#define FOR_SIBLINGS(ui, sibling) for(zw_base* child = (zw_base*)sibling; child != (zw_base*)ui; child = _ui_next(child))
-#define FOR_N_SIBLINGS(ui, sibling, n) for(i32 i = 0; sibling != (zw_base*)ui && i < n; sibling = _ui_next(sibling), i++)
-#define SWAP(type, a, b) { type tmp = a; a = b; b = tmp; }
 
 // Represents a registry entry (defines functions for a widget-id)
 typedef struct zui_type {
-    u16  (*size)(void*, bool, u16);
+    i16  (*size)(void*, bool, i16);
     void (*pos)(void*, zvec2, i32);
     void (*draw)(void*);
 } zui_type;
@@ -25,7 +22,7 @@ typedef struct zui_buf {
     u8 *data;
 } zui_buf;
 // Initialize buffer
-static void zbuf_init(zui_buf *l, i32 cap, i32 alignment) {
+void zbuf_init(zui_buf *l, i32 cap, i32 alignment) {
     // get log2 of cap
     if (alignment & (alignment - 1))
         zui_log("ERROR: Buffer alignment must be a power of two");
@@ -35,25 +32,25 @@ static void zbuf_init(zui_buf *l, i32 cap, i32 alignment) {
     l->alignsub1 = alignment - 1;
     l->data = malloc(cap);
 }
-static void zbuf_resize(zui_buf *l) {
+void zbuf_resize(zui_buf *l) {
     if(l->used <= (1 << l->cap)) return;
     l->cap++;
     l->data = realloc(l->data, 1 << l->cap);
 }
 // Allocate an aligned memory block on a given buffer
-static void *zbuf_alloc(zui_buf *l, i32 size) {
-    void *ret = l->data + l->used;
+void *zbuf_alloc(zui_buf *l, i32 size) {
+    i32 used = l->used;
     l->used += (size + l->alignsub1) & ~l->alignsub1;
     zbuf_resize(l);
-    return ret;
+    return l->data + used;
 }
-inline static i32 zbuf_align(zui_buf *l, i32 n) {
+i32 zbuf_align(zui_buf *l, i32 n) {
     return (n + l->alignsub1) & ~l->alignsub1;
 }
-inline static void *zbuf_peek(zui_buf *l, i32 size) {
+void *zbuf_peek(zui_buf *l, i32 size) {
     return l->data + l->used - ((size + l->alignsub1) & ~l->alignsub1);
 }
-inline static void *zbuf_pop(zui_buf *l, i32 size) {
+void *zbuf_pop(zui_buf *l, i32 size) {
     l->used -= ((size + l->alignsub1) & ~l->alignsub1);
     return l->data + l->used;
 }
@@ -292,35 +289,16 @@ void zui_log(char *fmt, ...) {
 }
 
 // Returns the width and height of text given the font id [S]
-u16 zui_text_axis(u16 font_id, char *text, i32 len, bool axis) {
-    u32 codepoint;
-    u32 sz = 0;
-    if (axis) return _zmap_get(&ctx->glyphs, _zgc_hash(font_id, 0x1FFFFF), &sz) ? sz : 0;
-    for (u32 bw, w = 0, i = 0; i < len; i += bw, sz += w) {
-        bw = utf8_val(text + i, &codepoint);
-        if (!bw) return 0;
-        u32 key = _zgc_hash(font_id, codepoint);
-        if (_zmap_get(&ctx->glyphs, key, &w)) {
-            //zui_log("Char %c: %d\n", codepoint, w);
-            continue;
-        }
-        // request renderer for glyph width
-        zcmd_glyph cmd = {
-            .header = { ZCMD_GLYPH_SZ, sizeof(zcmd_glyph) },
-            .c = { font_id, 0, codepoint }    
-        };
-        ctx->renderer((zcmd_any*)&cmd, ctx->user_data);
-        _zmap_set(&ctx->glyphs, key, cmd.c.width);
-        w = cmd.c.width;
-        //zui_log("Char %c: %d\n", codepoint, w);
-    }
-    return sz;
-}
 zvec2 zui_text_sz(u16 font_id, char *text, i32 len) {
-    zvec2 ret;
-    ret.x = zui_text_axis(font_id, text, len, 0);
-    ret.y = zui_text_axis(font_id, text, len, 1);
-    return ret;
+    zcmd_txt_sz sz = {
+        .header = { ZCMD_TXT_SZ, sizeof(zcmd_txt_sz) },
+        .font_id = font_id,
+        .text = text,
+        .len = len,
+        .response = { 0, 0 }
+    };
+    ctx->renderer((zcmd_any*)&sz, ctx->user_data);
+    return sz.response;
 }
 // Report mouse button press
 void zui_mouse_down(u16 btn) { ctx->mouse_state |= btn; }
@@ -443,15 +421,21 @@ void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len,
     r->color = color;
     memcpy(r->text, text, len);
 }
-void _push_bezier_cmd(i32 cnt, zvec2 *points, zcolor color, i32 zindex) {
+void _push_bezier_cmd(i32 cnt, zvec2 *points, i32 width, zcolor color, i32 zindex) {
     zcmd_bezier *b = _draw_alloc(ZCMD_DRAW_BEZIER, sizeof(zcmd_bezier) + cnt * sizeof(zvec2), zindex);
     b->color = color;
+    b->width = width;
     for(i32 i = 0; i < cnt; i++) b->points[i] = points[i];
 }
 
 zvec2 _vec_max(zvec2 a, zvec2 b) { return (zvec2) { max(a.x, b.x), max(a.y, b.y) }; }
 zvec2 _vec_min(zvec2 a, zvec2 b) { return (zvec2) { min(a.x, b.x), min(a.y, b.y) }; }
 zvec2 _vec_add(zvec2 a, zvec2 b) { return (zvec2) { a.x + b.x, a.y + b.y }; }
+zvec2 _vec_sub(zvec2 a, zvec2 b) { return (zvec2) { a.x - b.x, a.y - b.y }; }
+i32 _vec_distsq(zvec2 a, zvec2 b) {
+    zvec2 v = _vec_sub(a, b);
+    return v.x*v.x + v.y*v.y;
+}
 
 bool _vec_within(zvec2 v, zrect bounds) {
     return (v.x >= bounds.x) && (v.x <= bounds.x + bounds.w) && (v.y >= bounds.y) && (v.y <= bounds.y + bounds.h);
@@ -528,6 +512,11 @@ bool _ui_clicked(i32 buttons) {
         return true;
     return false;
 }
+bool _ui_released(i32 buttons) {
+    if(~ctx->mouse_state & (ctx->mouse_state ^ ctx->prev_mouse_state) & buttons)
+        return true;
+    return false;
+}
 
 void _ui_print(zw_base *cmd, int indent) {
     zui_log("%04x | ", _ui_index(cmd));
@@ -540,12 +529,21 @@ void _ui_print(zw_base *cmd, int indent) {
         _ui_print(child, indent + 1);
 }
 
-u16 _ui_sz(zw_base *ui, bool axis, u16 bound) {
+zvec2 _ui_mpos() {
+    return ctx->mouse_pos;
+}
+
+zvec2 _ui_mdelta() {
+    return _vec_sub(ctx->mouse_pos, ctx->prev_mouse_pos);
+}
+
+i16 _ui_sz(zw_base *ui, bool axis, i16 bound) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
-    u16 sz = type.size(ui, axis, bound);
-    ui->used.sz[axis] = sz;
-    ui->bounds.sz[axis] = bound == Z_AUTO ? ui->used.sz[axis] : bound;
-    return ui->bounds.sz[axis];
+    i16 sz = type.size(ui, axis, bound);
+    i16 i = 2 + axis;
+    ui->used.e[i] = sz;
+    ui->bounds.e[i] = bound == Z_AUTO ? ui->used.e[i] : bound;
+    return ui->bounds.e[i];
 }
 bool _ui_is_child(zw_base *container, zw_base *other) {
     if(other < container) return false; // children must have a greater index (ptr)
@@ -609,24 +607,6 @@ void _ui_draw(zw_base *ui) {
         _zmap_set(&ctx->style, _zs_hash(edits[i].widget_id, edits[i].style_id), edits[i].value.u);
 }
 
-static zvec2 _ui_sz_ofs(zvec2 bounds, zvec2 ofs) {
-    zvec2 ret = { 0, 0 };
-    if(bounds.x == Z_AUTO) ret.x = Z_AUTO;
-    else ret.x = max(bounds.x + ofs.x, 0);
-    if(bounds.y == Z_AUTO) ret.y = Z_AUTO;
-    else ret.y = max(bounds.y + ofs.y, 0);
-    return ret;
-}
-
-static zvec2 _ui_sz_auto(zvec2 bounds, zvec2 auto_sz) {
-    zvec2 ret = { 0, 0 };
-    if(bounds.x == Z_AUTO) ret.x = auto_sz.x;
-    else ret.x = bounds.x;
-    if(bounds.y == Z_AUTO) ret.y = auto_sz.y;
-    else ret.y = bounds.y;
-    return ret;
-}
-
 void zui_print_tree() {
     zui_log("printing tree...\n");
     _ui_print(_ui_widget(0), 0);
@@ -639,7 +619,7 @@ i32 zui_new_id() {
 void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb) {
     ctx->registry.used = (widget_id - ZW_FIRST) * sizeof(zui_type);
     zui_type *t = zbuf_alloc(&ctx->registry, sizeof(zui_type));
-    t->size = (u16(*)(void*, bool, u16))size_cb;
+    t->size = (i16(*)(void*, bool, i16))size_cb;
     t->pos = (void(*)(void*, zvec2, i32))pos_cb;
     t->draw = (void(*)(void*))draw_cb;
 }
@@ -765,6 +745,7 @@ void zui_render() {
     _zui_qsort(deque_reader, ctx->zdeque.used / sizeof(u64));
     zcmd_any begin = { .base = { ZCMD_RENDER_BEGIN, sizeof(zcmd) } };
     ctx->renderer(&begin, ctx->user_data);
+    i32 i = 0;
     while(deque_reader < (u64*)(ctx->zdeque.data + ctx->zdeque.used)) {
         u64 next_pair = *deque_reader++;
         i32 index = next_pair & 0x7FFFFFFF;
@@ -811,9 +792,9 @@ static void __zui_blank_draw(zw_base *w) {}
 void zui_box() {
     _cont_alloc(ZW_BOX, sizeof(zw_box));
 }
-static u16 __zui_box_size(zw_box *box, bool axis, u16 bound) {
+static i16 __zui_box_size(zw_box *box, bool axis, i16 bound) {
     if (bound != Z_AUTO) bound -= ctx->padding.e[axis] * 2;
-    u16 auto_sz = 0;
+    i16 auto_sz = 0;
     FOR_CHILDREN(box)
         auto_sz = max(auto_sz, _ui_sz(child, axis, bound));
     return (bound == Z_AUTO ? auto_sz : bound) + ctx->padding.e[axis] * 2;
@@ -832,7 +813,7 @@ void zui_window() {
     ctx->flags = 0;
     _cont_alloc(ZW_WINDOW, sizeof(zw_box));
 }
-static u16 __zui_window_size(zw_box *window, bool axis, u16 bound) {
+static i16 __zui_window_size(zw_box *window, bool axis, i16 bound) {
     FOR_CHILDREN(window) _ui_sz(child, axis, bound);
     return bound;
 }
@@ -855,9 +836,8 @@ void zui_label(const char *text) {
     zui_label_n((char*)text, (i32)strlen(text));
 }
 
-static u16 _zui_label_size(zw_label *data, bool axis, u16 bound) {
-    u16 tmp = zui_text_axis(ctx->font_id, data->text, data->len, axis);
-    return tmp;
+static i16 _zui_label_size(zw_label *data, bool axis, i16 bound) {
+    return zui_text_sz(ctx->font_id, data->text, data->len).e[axis];
 }
 
 static void _zui_label_draw(zw_label *data) {
@@ -898,8 +878,8 @@ bool zui_check(u8 *state) {
     return *state;
 }
 
-static u16 _zui_check_size(zw_check *data, bool axis, zvec2 bound) {
-    return zui_text_axis(ctx->font_id, "\xE2\x88\x9A", 3, axis) + 2;
+static i16 _zui_check_size(zw_check *data, bool axis, i16 bound) {
+    return zui_text_sz(ctx->font_id, "\xE2\x88\x9A", 3).e[axis] + 2;
 }
 
 static void _zui_check_draw(zw_check *data) {
@@ -963,7 +943,7 @@ i32 zui_combo(char *tooltip, char *csoptions, i32 *state) {
     zui_end();
     return (*state >> 1) - 1;
 }
-static u16 _zui_combo_size(zw_combo *data, bool axis, u16 bound) {
+static i16 _zui_combo_size(zw_combo *data, bool axis, i16 bound) {
     //zvec2 auto_sz = zui_text_sz(ctx->font_id, data->tooltip, (i32)strlen(data->tooltip));
     //zvec2 back_sz = (zvec2) { 0, 0 };
     //bounds.y = Z_AUTO;
@@ -1047,9 +1027,9 @@ void zui_text(char *buffer, i32 len, zd_text *state) {
     l->state = state;
 }
 
-static u16 _zui_text_size(zw_text *data, bool axis, u16 bound) {
+static i16 _zui_text_size(zw_text *data, bool axis, i16 bound) {
     if (!axis && bound != Z_AUTO) return bound;
-    return zui_text_axis(ctx->font_id, data->buffer, (i32)strlen(data->buffer), axis) + 10;
+    return zui_text_sz(ctx->font_id, data->buffer, (i32)strlen(data->buffer)).e[axis] + 10;
 }
 
 static i32 _zui_text_get_index(zw_text *data, i32 len) {
@@ -1209,32 +1189,71 @@ static void _zui_text_draw(zw_text *data) {
 // creates a multi-line text input
 void zui_textbox(char *buffer, i32 len, i32 *state);
 
-static void _zui_layout(i32 id, i32 n, float *sizes) {
-    i32 bytes = sizeof(zw_layout) + (n - 1) * sizeof(float);
+static void _zui_layout(i32 id, i32 n, va_list sizes) {
+    i32 bytes = sizeof(zw_layout) + n * sizeof(i16);
     zw_layout *l = _cont_alloc(id, bytes);
     l->count = n;
-    if(sizes)
-        memcpy(l->data, sizes, n * sizeof(float));
-    else {
-        for(i32 i = 0; i < n; i++)
-            l->data[i] = Z_AUTO;
+    for(i32 i = 0; i < n; i++) {
+        l->sizes[i] = va_arg(sizes, i32);
+        if(l->sizes[i] != Z_AUTO_ALL) continue;
+        for(i32 j = i; j < n; j++)
+            l->sizes[j] = Z_AUTO;
+        break;
     }
 }
 
-void zui_col(i32 n, float *heights) {
-    _zui_layout(ZW_COL, n, heights);
+void zui_col(i32 n, ...) {
+    va_list args;
+    va_start(args, n);
+    _zui_layout(ZW_COL, n, args);
+    va_end(args);
 }
 
-void zui_row(i32 n, float *heights) {
-    _zui_layout(ZW_ROW, n, heights);
+void zui_row(i32 n, ...) {
+    va_list args;
+    va_start(args, n);
+    _zui_layout(ZW_ROW, n, args);
+    va_end(args);
 }
 
 static void _zui_layout_draw(zw_layout *data) {
-    FOR_CHILDREN(data)
-        _ui_draw(child);
+    FOR_CHILDREN(data) _ui_draw(child);
 }
 
-static u16 _zui_layout_size(zw_layout *data, bool axis, u16 bound) {
+static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
+    bool AXIS = data->widget.id - ZW_ROW;
+    i16 used = 0;
+    if(axis != AXIS) { // not primary axis of layout. IE: Row & Y axis
+        FOR_CHILDREN(data) {
+            i16 sz = _ui_sz(child, axis, bound);
+            used = max(used, sz);
+        }
+        return used;
+    }
+    i32 i = 0;
+    i32 fillcnt = 0;
+    used = (data->count - 1) * ctx->padding.e[axis];
+    FOR_CHILDREN(data) {
+        if(data->sizes[i] >= 0)
+            used += _ui_sz(child, axis, data->sizes[i]);
+        else fillcnt++;
+        i++;
+    }
+
+    if(bound == Z_AUTO && fillcnt > 0) {
+        zui_log("ERROR: row/col cannot be autosized if there is a child sized to fill contents.");
+    } else {
+        i = 0;
+        FOR_CHILDREN(data) {
+            i32 leftover = bound - used;
+            if(data->sizes[i++] < 0) {
+                used += _ui_sz(child, axis, leftover / fillcnt);
+                fillcnt--;
+            }
+        }
+    }
+    return used;
+
     //// minimum size of empty container is 0, 0
     //if(~data->widget.flags & ZF_PARENT)
     //    return (zvec2) { 0, 0 };
@@ -1294,10 +1313,10 @@ void zui_grid(i32 cols, i32 rows, float *col_row_settings) {
     }
 }
 
-static u16 _zui_grid_size(zw_grid *grid, bool axis, u16 bound) {
-    u16 major_cnt = axis ? grid->rows : grid->cols;
-    u16 minor_cnt = axis ? grid->cols : grid->rows;
-    u16 sz = ctx->padding.e[axis] * (major_cnt - 1);
+static i16 _zui_grid_size(zw_grid *grid, bool axis, i16 bound) {
+    i16 major_cnt = axis ? grid->rows : grid->cols;
+    i16 minor_cnt = axis ? grid->cols : grid->rows;
+    i16 sz = ctx->padding.e[axis] * (major_cnt - 1);
     typedef union {
         u64 u;
         struct { i32 index; u32 n : 30; u32 percent : 1; u32 fill : 1; };
@@ -1317,28 +1336,28 @@ static u16 _zui_grid_size(zw_grid *grid, bool axis, u16 bound) {
     _zui_qsort((u64*)children, grid->rows * grid->cols);
     if (n != grid->rows * grid->cols)
         zui_log("ERR: grid has wrong # of children\r\n");
-    u16 *sizes = _alloca(sizeof(u16) * (grid->rows + grid->cols));
-    memset(sizes, 0, sizeof(u16) * (grid->rows + grid->cols));
-    u16 non_percent = 0;
+    i16 *sizes = _alloca(sizeof(i16) * (grid->rows + grid->cols));
+    memset(sizes, 0, sizeof(i16) * (grid->rows + grid->cols));
+    i16 non_percent = 0;
     for (i32 i = 0; i < n; i++) {
         i32 child = children[i].n;
-        u16 pos = axis ? (child / grid->rows + grid->rows) : (child % grid->rows);
+        i16 pos = axis ? (child / grid->rows + grid->rows) : (child % grid->rows);
         zw_base *widget = _ui_widget(children[i].index);
         if (children[i].fill) {
             _ui_sz(widget, axis, sizes[pos]);
             continue;
         }
         float f = grid->data[pos];
-        u16 child_bound = f < 0 ? (non_percent - bound) * f : f;
-        u16 child_sz = _ui_sz(widget, axis, child_bound);
-        u16 ofs = max(sizes[pos], child_sz) - sizes[pos];
+        i16 child_bound = f < 0 ? (non_percent - bound) * f : f;
+        i16 child_sz = _ui_sz(widget, axis, child_bound);
+        i16 ofs = max(sizes[pos], child_sz) - sizes[pos];
         if (f >= 0) non_percent += ofs;
         sizes[pos] += ofs;
         sz += child_sz;
     }
     for (i32 i = 0; i < n; i++) {
-        u16 pos = axis ? (children[i].n / grid->rows + grid->rows) : (children[i].n % grid->rows);
-        if ((u16)grid->data[pos] == Z_AUTO) _ui_widget(children[i].index)->bounds.sz[axis] = sizes[pos];
+        i16 pos = axis ? (children[i].n / grid->rows + grid->rows) : (children[i].n % grid->rows);
+        if ((i16)grid->data[pos] == Z_AUTO) _ui_widget(children[i].index)->bounds.e[2 + axis] = sizes[pos];
     }
 
     /*
@@ -1462,7 +1481,7 @@ void zui_tabset(char *cstabs, i32 *state) {
     } while (loop);
 }
 
-static u16 _zui_tabset_size(zw_tabset *tabs, bool axis, u16 bound) {
+static i16 _zui_tabset_size(zw_tabset *tabs, bool axis, i16 bound) {
     zvec2 padding = zui_stylev(ZW_TABSET, ZSV_PADDING);
     //zvec2 tab_size = { padding.x * 2 * tabs->label_cnt, 0 };
     u16 tab_size = axis ? 0 : padding.x * 2 * tabs->label_cnt;

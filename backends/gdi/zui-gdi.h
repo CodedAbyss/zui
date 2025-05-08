@@ -266,16 +266,14 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
             }
             cmd->font.response = (handle != 0);
         } break;
-        case ZCMD_GLYPH_SZ: {
-            u16 font_id = cmd->glyph.c.font_id;
-            WCHAR wstr[4]; // should be more than enough for a utf8 codepoint
-            char text[4];
-            i32 len = utf8_len(cmd->glyph.c.c);
-            utf8_print(text, cmd->glyph.c.c, len);
+        case ZCMD_TXT_SZ: {
+            u16 font_id = cmd->txt_sz.font_id;
             SIZE size;
-            i32 wsize = MultiByteToWideChar(CP_UTF8, 0, text, len, wstr, 4); 
+            i32 wsize = MultiByteToWideChar(CP_UTF8, 0, cmd->txt_sz.text, cmd->txt_sz.len, 0, 0);
+            WCHAR *wstr = _alloca(sizeof(WCHAR) * wsize);
+            MultiByteToWideChar(CP_UTF8, 0, cmd->txt_sz.text, cmd->txt_sz.len, wstr, wsize);
             if (GetTextExtentPoint32W(app_ctx.font_dc[font_id], wstr, wsize, &size))
-                cmd->glyph.c.width = size.cx;
+                cmd->txt_sz.response = (zvec2) { size.cx, size.cy };
         } break;
 		case ZCMD_DRAW_CLIP: {
 			zrect clip = cmd->clip.rect;
@@ -303,12 +301,17 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
 			ExtTextOutW(app_ctx.memory_dc, cmd->text.pos.x, cmd->text.pos.y, 0, NULL, wstr, wsize, NULL);
 		} break;    
         case ZCMD_DRAW_BEZIER: {
+            extern int printf(const char *fmt, ...);
             int cnt = (cmd->base.bytes - sizeof(zcmd_bezier)) / sizeof(zvec2);
             POINT *points = _alloca(sizeof(POINT) * cnt);
             for(i32 i = 0; i < cnt; i++) {
                 zvec2 v = cmd->bezier.points[i];
                 points[i] = (POINT) { v.x, v.y };
             }
+			zcolor c = cmd->bezier.color;
+            HPEN pen = CreatePen(PS_SOLID, cmd->bezier.width, RGB(c.r, c.g, c.b));
+            HPEN old = (HPEN)SelectObject(app_ctx.memory_dc, pen);
+            DeleteObject(old);
             PolyBezier(app_ctx.memory_dc, points, cnt);
         } break;
     }

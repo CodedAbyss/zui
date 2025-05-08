@@ -24,45 +24,14 @@ typedef double f64;
 extern "C" {
 #endif
 
-#define Z_AUTO ((u16)-1)
+#define Z_AUTO 32766
+#define Z_AUTO_ALL 32767
+#define Z_FILL -1
 
 typedef struct zcmd { u16 id, bytes; } zcmd;
 typedef struct zcolor { u8 r, g, b, a; } zcolor;
-typedef union zvec2 { struct { u16 x, y; }; u16 e[2]; } zvec2;
-typedef union zrect { struct { u16 x, y, w, h; }; struct { u16 pos[2]; u16 sz[2]; }; } zrect;
-
-/*
-#define ZUI_IMPL
-#include <zui-gdi.h>
-zui_launch(ZUI_GDI, &(zgdi_args) {
-    .width  = 800,
-    .height = 600,
-    .title  = "Hello Zui!",
-    .init   = ...
-    .frame  = ...
-    .close  = ...
-    .tick   = ... // if set, zui's events are managed externally
-});
-
-#include <zui-net.h>
-void on_connect(i32 connections, u32 ip);
-void on_disconnect(i32 connections, u32 ip) {
-    if(connections == 0)
-        zui_close();
-}
-
-zui_launch(ZUI_NET, &(znet_args) {
-    .ip = znet_ip("127.0.0.1"),
-    .socket_type = Z_UDP,
-    .max_connections = 1
-    .on_connect    = ...
-    .on_disconnect = ...
-    .init   = ...
-    .frame  = ...
-    .close  = ...
-    .tick   = true // if set to true, zui's event loop is managed by zui_tick()
-});
-*/
+typedef union zvec2 { struct { i16 x, y; }; i16 e[2]; } zvec2;
+typedef union zrect { struct { i16 x, y, w, h; }; struct { zvec2 pos; zvec2 sz; }; i16 e[4]; } zrect;
 
 enum ZUI_KEYS {
     ZK_L_SHIFT = 1 << 0,
@@ -136,26 +105,24 @@ enum ZUI_CMDS {
     ZCMD_DRAW_RECT,
     ZCMD_DRAW_TEXT,
     ZCMD_DRAW_BEZIER,
-    ZCMD_POLL_EVENTS,
         // _ZCMD_KEYCODE,   // zui_key_char
         // _ZCMD_MOUSE,     // zcmd *zui_mouse_*
         // _ZCMD_RESIZE,    // zcmd *zui_resize(u16 w, u16 h);
     ZCMD_SET_CLIPBOARD,
     ZCMD_GET_CLIPBOARD,
         // _ZCMD_CLIPBOARD, // zcmd *zui_clipboard(char *);
-    ZCMD_GLYPH_SZ,
+    ZCMD_TXT_SZ,
         // _ZCMD_GLYPH_SZ,  // zcmd *zui_set_glyph(u16 font_id, i32 codepoint, zvec2 sz);
 };
 
-typedef struct zglyph_data { u16 font_id; u16 width; i32 c; } zglyph_data;
 typedef struct zcmd_clip { zcmd header; zrect rect; } zcmd_clip;                                          // set clip rect
 typedef struct zcmd_rect { zcmd header; zrect rect; zcolor color; } zcmd_rect;                            // draw rect
 typedef struct zcmd_text { zcmd header; zvec2 pos;  zcolor color; u16 font_id; char text[0]; } zcmd_text; // draw text
-typedef struct zcmd_bezier { zcmd header; zcolor color; zvec2 points[0]; } zcmd_bezier; // draw bezier
+typedef struct zcmd_bezier { zcmd header; zcolor color; i32 width; zvec2 points[0]; } zcmd_bezier;        // draw bezier
 typedef struct zcmd_get_clipboard { zcmd header; char *response; } zcmd_get_clipboard;                    // get clipboard
 typedef struct zcmd_set_clipboard { zcmd header; char text[0]; } zcmd_set_clipboard;                      // set clipboard
-typedef struct zcmd_reg_font { zcmd header; u16 font_id; u16 size; bool response; char family[0]; } zcmd_reg_font;               // register font
-typedef struct zcmd_glyph { zcmd header; zglyph_data c; } zcmd_glyph;
+typedef struct zcmd_reg_font { zcmd header; u16 font_id; u16 size; bool response; char family[0]; } zcmd_reg_font; // register font
+typedef struct zcmd_txt_sz { zcmd header; u16 font_id; u16 len; char *text; zvec2 response; } zcmd_txt_sz; // get text size
 typedef union {
     zcmd base;
     zcmd_clip clip;
@@ -163,7 +130,7 @@ typedef union {
     zcmd_text text;
     zcmd_bezier bezier;
     zcmd_reg_font font;
-    zcmd_glyph glyph;
+    zcmd_txt_sz txt_sz;
     zcmd_set_clipboard set_clipboard;
     zcmd_get_clipboard get_clipboard;
 } zcmd_any;
@@ -183,14 +150,14 @@ void zui_launch(zimpl implementation, void *settings);
 
 typedef struct zccmd_mouse { zcmd header; zvec2 pos; u16 state; } zccmd_mouse;     // mouse movement / state
 typedef struct zccmd_keys { zcmd header; u32 key; u16 modifiers; } zccmd_keys;     // key presses
-typedef struct zccmd_glyph { zcmd header; zglyph_data c; } zccmd_glyph;            // sent every time a new glyph needs to be displayed
+//typedef struct zccmd_glyph { zcmd header; zglyph_data c; } zccmd_glyph;            // sent every time a new glyph needs to be displayed
 typedef struct zccmd_win { zcmd header; zvec2 sz; } zccmd_win;                     // new window size
 typedef struct zccmd_font { zcmd header; u32 status; } zccmd_stat;                 // response to server command 
 typedef union zccmd {
     zcmd        base;
     zccmd_mouse mouse;
     zccmd_keys  keys;
-    zccmd_glyph glyph;
+    //zccmd_glyph glyph;
     zccmd_win   win;
     zccmd_stat  status;
 } zccmd;
@@ -222,7 +189,7 @@ typedef struct zw_cont { u16 id, bytes; i32 next, zindex, flags; zrect bounds; z
 typedef struct zd_text { i32 flags, index, ofs, selection; } zd_text;
 
 typedef struct zw_box    { Z_CONT; } zw_box;
-typedef struct zw_layout { Z_CONT; i32 count; float data[1]; } zw_layout;
+typedef struct zw_layout { Z_CONT; i32 count; i16 sizes[0]; } zw_layout;
 typedef struct zw_grid   { Z_CONT; u8 rows, cols, padx, pady; float data[1]; } zw_grid;
 typedef struct zw_tabset { Z_CONT; char *cstabs; i32 *state; u16 label_cnt; u16 tabheight; } zw_tabset;
 typedef struct zw_text   { Z_WIDGET; char *buffer; i32 len; zd_text *state; } zw_text;
@@ -232,6 +199,11 @@ typedef struct zw_combo  { Z_WIDGET; char *tooltip, *csoptions; i32 *state; } zw
 typedef struct zw_label  { Z_WIDGET; char *text;  i32 len; } zw_label;
 
 #ifdef ZUI_DEV
+#define FOR_CHILDREN(ui) for(zw_base* child = _ui_get_child((zw_base*)ui); child != (zw_base*)ui; child = _ui_next(child))
+#define FOR_SIBLINGS(ui, sibling) for(zw_base* child = (zw_base*)sibling; child != (zw_base*)ui; child = _ui_next(child))
+#define FOR_N_SIBLINGS(ui, sibling, n) for(i32 i = 0; sibling != (zw_base*)ui && i < n; sibling = _ui_next(sibling), i++)
+#define SWAP(type, a, b) { type tmp = a; a = b; b = tmp; }
+
 zw_base *_ui_widget(i32 index);
 i32 _ui_index(zw_base *ui);
 zw_base *_ui_next(zw_base *widget);
@@ -243,10 +215,12 @@ zrect _rect_pad(zrect r, zvec2 padding);
 void _push_rect_cmd(zrect rect, zcolor color, i32 zindex);
 void _push_clip_cmd(zrect rect, i32 zindex);
 void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex);
-void _push_bezier_cmd(i32 cnt, zvec2 *points, zcolor color, i32 zindex);
+void _push_bezier_cmd(i32 cnt, zvec2 *points, i32 width, zcolor color, i32 zindex);
 zvec2 _vec_max(zvec2 a, zvec2 b);
 zvec2 _vec_min(zvec2 a, zvec2 b);
 zvec2 _vec_add(zvec2 a, zvec2 b);
+zvec2 _vec_sub(zvec2 a, zvec2 b);
+i32 _vec_distsq(zvec2 a, zvec2 b);
 bool _vec_within(zvec2 v, zrect bounds);
 bool _rect_within(zrect r, zrect bounds);
 bool _rect_intersect(zrect a, zrect b, zrect *intersect);
@@ -257,8 +231,11 @@ zw_base *_ui_get_child(zw_base *ui);
 bool _ui_pressed(i32 buttons);
 bool _ui_dragged(i32 buttons);
 bool _ui_clicked(i32 buttons);
+bool _ui_released(i32 buttons);
 void _ui_print(zw_base *cmd, int indent);
-u16 _ui_sz(zw_base *ui, bool axis, u16 bound);
+zvec2 _ui_mpos();
+zvec2 _ui_mdelta();
+i16 _ui_sz(zw_base *ui, bool axis, i16 bound);
 bool _ui_is_child(zw_base *container, zw_base *other);
 bool _ui_hovered(zw_base *ui);
 bool _ui_cont_hovered(zw_base *ui);
@@ -361,8 +338,8 @@ bool zui_check(u8 *state);
 void zui_validator(bool(*validator)(char *text));
 void zui_text(char *buffer, i32 len, zd_text *state);
 void zui_textbox(char *buffer, i32 len, i32 *state);
-void zui_col(i32 n, float *heights);
-void zui_row(i32 n, float *widths);
+void zui_col(i32 n, ...);
+void zui_row(i32 n, ...);
 void zui_grid(i32 cols, i32 rows, float *col_row_settings);
 void zui_tabset(char *cstabs, i32 *state);
 

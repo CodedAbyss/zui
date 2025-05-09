@@ -74,6 +74,7 @@ enum ZUI_STYLEABLE {
     ZSV_PADDING,
     ZSV_SPACING,
     ZSV_BORDER,
+    ZS_LAST,
 };
 
 enum ZUI_FLAGS {
@@ -243,6 +244,10 @@ bool _ui_focused(zw_base *ui);
 bool _ui_cont_focused(zw_base *ui);
 void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex);
 void _ui_draw(zw_base *ui);
+void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb);
+void zui_default_style(u32 widget_id, ...);
+i32 zui_new_sid();
+i32 zui_new_wid();
 #endif
 
 #ifdef ZUI_UTF8
@@ -280,10 +285,6 @@ bool zmap_get(zmap *map, u32 key, u32 *value);
 // void zui_client_push(zscmd *cmd);
 // void zui_client_respond(i32 value);
 // void zui_client_render();
-
-
-void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb);
-i32 zui_new_id();
 
 void zui_log(char *fmt, ...);
 

@@ -178,7 +178,8 @@ typedef struct zui_ctx {
     zui_buf ui;
     zmap glyphs;
     i32 response;
-    i32 next_widget_id;
+    i32 next_wid;
+    i32 next_sid;
 
     zvec2 padding;
     u16 font_id;
@@ -599,6 +600,7 @@ void _ui_draw(zw_base *ui) {
             _zmap_set(&ctx->style, key, edits[i].value.u);
             edits[i].value.u = value; // save previous value
         }
+        _push_clip_cmd(ui->used, ui->zindex);
     }
     type.draw(ui);
     if (~ui->flags & ZF_CONTAINER) return;
@@ -612,9 +614,9 @@ void zui_print_tree() {
     _ui_print(_ui_widget(0), 0);
 }
 
-i32 zui_new_id() {
-    return ctx->next_widget_id++;
-}
+
+i32 zui_new_wid() { return ctx->next_wid++; }
+i32 zui_new_sid() { return ctx->next_sid++; }
 
 void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb) {
     ctx->registry.used = (widget_id - ZW_FIRST) * sizeof(zui_type);
@@ -1232,7 +1234,8 @@ static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
     }
     i32 i = 0;
     i32 fillcnt = 0;
-    used = (data->count - 1) * ctx->padding.e[axis];
+    zvec2 spacing = zui_stylev(data->cont.id, ZSV_SPACING);
+    used = (data->count - 1) * spacing.e[axis];
     FOR_CHILDREN(data) {
         if(data->sizes[i] >= 0)
             used += _ui_sz(child, axis, data->sizes[i]);
@@ -1253,42 +1256,6 @@ static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
         }
     }
     return used;
-
-    //// minimum size of empty container is 0, 0
-    //if(~data->widget.flags & ZF_PARENT)
-    //    return (zvec2) { 0, 0 };
-
-    //// We share logic between rows and columns by having an AXIS variable
-    //// AXIS is x for ZW_ROW, y for ZW_COL
-    //bool AXIS = data->widget.id - ZW_ROW;
-    //i32 i = 0, j = 0, end = data->count;
-    //i32 major_bound = bounds.e[AXIS];
-    //i32 minor_bound = bounds.e[!AXIS];
-    //i32 major = ctx->padding.e[AXIS] * (end - 1);
-    //i32 minor = 0; 
-
-    //u64 *children = _alloca(sizeof(u64) * data->count);
-    //FOR_CHILDREN(data) children[j] = ((u64)(data->data[j] < 0) << 63) | ((u64)j << 32) | _ui_index(child);
- 
-    //// move percentages to end of list (calculate them last)
-    //j = _zui_partition(children, data->count);
-    //zvec2 child_bounds;
-    //i32 pixels_left;
-    //child_bounds.e[!AXIS] = minor_bound;
-    //for(i = 0; i < end; i++) {
-    //    float f = data->data[(u16)(children[i] >> 32)];
-    //    i32 bound = f < 0 ? (i32)(pixels_left * -f + 0.5f) : (i32)f;
-    //    child_bounds.e[AXIS] = bound;
-    //    zvec2 child_sz = _ui_sz(_ui_widget((i32)children[i]), child_bounds);
-    //    minor = max(minor, child_sz.e[!AXIS]);
-    //    major += bound == Z_AUTO ? child_sz.e[AXIS] : bound;
-    //    if (i == j) pixels_left = major_bound - major;
-    //}
-    //FOR_CHILDREN(data) child->bounds.sz[!AXIS] = minor;
-    //bounds.e[AXIS] = major;
-    //bounds.e[!AXIS] = minor;
-    //return bounds;
-    return 0;
 }
 
 static void _zui_layout_pos(zw_layout *data, zvec2 pos, i32 zindex) {
@@ -1573,13 +1540,19 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
 
     zui_register(ZW_BOX, __zui_box_size, __zui_box_pos, __zui_box_draw);
     zui_default_style(ZW_BOX, ZSC_BACKGROUND, (zcolor) { 50, 50, 50, 255 }, ZS_DONE);
-
-    //zui_register(ZW_POPUP, __zui_popup_size, __zui_popup_pos, __zui_popup_draw);
     zui_register(ZW_LABEL, _zui_label_size, 0, _zui_label_draw);
     zui_default_style(ZW_LABEL, ZSC_FOREGROUND, (zcolor) { 250, 250, 250, 255 }, ZS_DONE);
 
     zui_register(ZW_COL, _zui_layout_size, _zui_layout_pos, _zui_layout_draw);
+    zui_default_style(ZW_COL,
+        ZSV_SPACING, (zvec2) { 15, 15 },
+        ZSV_PADDING, (zvec2) { 0, 0 },
+        ZS_DONE);
     zui_register(ZW_ROW, _zui_layout_size, _zui_layout_pos, _zui_layout_draw);
+    zui_default_style(ZW_ROW,
+        ZSV_SPACING, (zvec2) { 15, 15 },
+        ZSV_PADDING, (zvec2) { 0, 0 },
+        ZS_DONE);
     zui_register(ZW_BTN, __zui_box_size, __zui_box_pos, _zui_button_draw);
     zui_register(ZW_CHECK, _zui_check_size, 0, _zui_check_draw);
     zui_register(ZW_TEXT, _zui_text_size, 0, _zui_text_draw);
@@ -1601,7 +1574,8 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
         ZSV_PADDING,    (zvec2)  { 15, 5 },
         ZS_DONE);
 
-    ctx->next_widget_id = ZW_LAST;
+    ctx->next_wid = ZW_LAST;
+    ctx->next_sid = ZS_LAST;
 
     zcmd start = { .id = ZCMD_INIT, .bytes = sizeof(zcmd) };
     fn((zcmd_any*)&start, user_data);

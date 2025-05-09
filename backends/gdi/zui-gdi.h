@@ -311,8 +311,9 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
 			zcolor c = cmd->bezier.color;
             HPEN pen = CreatePen(PS_SOLID, cmd->bezier.width, RGB(c.r, c.g, c.b));
             HPEN old = (HPEN)SelectObject(app_ctx.memory_dc, pen);
-            DeleteObject(old);
             PolyBezier(app_ctx.memory_dc, points, cnt);
+            SelectObject(app_ctx.memory_dc, old);
+            DeleteObject(pen);
         } break;
     }
 }

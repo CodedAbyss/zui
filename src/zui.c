@@ -86,6 +86,11 @@ static u64 *_zmap_node(zmap *map, u32 key) {
         index = (index + 1) % map->cap;
     return &map->data[index];
 }
+static u32 *_zmap_get_ptr(zmap *map, u32 key) {
+    u64 *node = _zmap_node(map, key);
+    if((u32)*node == 0) return 0;
+    return (u32*)node + 1;
+}
 static bool _zmap_get(zmap *map, u32 key, u32 *value) {
     u64 *node = _zmap_node(map, key);
     *value = (*node >> 32);
@@ -538,14 +543,6 @@ zvec2 _ui_mdelta() {
     return _vec_sub(ctx->mouse_pos, ctx->prev_mouse_pos);
 }
 
-i16 _ui_sz(zw_base *ui, bool axis, i16 bound) {
-    zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
-    i16 sz = type.size(ui, axis, bound);
-    i16 i = 2 + axis;
-    ui->used.e[i] = sz;
-    ui->bounds.e[i] = bound == Z_AUTO ? ui->used.e[i] : bound;
-    return ui->bounds.e[i];
-}
 bool _ui_is_child(zw_base *container, zw_base *other) {
     if(other < container) return false; // children must have a greater index (ptr)
     if(other == container) return true; // we consider a ui to be a child of itself (useful for hovering / focusing)
@@ -565,6 +562,44 @@ bool _ui_cont_hovered(zw_base *ui) { return _ui_is_child(ui, _ui_widget(ctx->hov
 bool _ui_focused(zw_base *ui) { return ui == _ui_widget(ctx->focused); }
 bool _ui_cont_focused(zw_base *ui) { return _ui_is_child(ui, _ui_widget(ctx->focused)); }
 
+bool _ui_apply_styles(zw_base *ui) {
+    zw_cont *c = (zw_cont*)ui;
+    if((~ui->flags & ZF_CONTAINER) || !c->style_edits) return false;
+    // apply style changes for this container and it's children
+    zstyle *edits;
+    edits = (zstyle*)((u8*)ui + zbuf_align(&ctx->ui, ui->bytes - c->style_edits * sizeof(zstyle)));
+    for (i32 i = 0; i < c->style_edits; i++) {
+        u32 value, key = _zs_hash(edits[i].widget_id, edits[i].style_id);
+        if (!_zmap_get(&ctx->style, key, &value))
+            zui_log("WARNING: No default style for widget-id:%d,style-id:%d\n", edits[i].widget_id, edits[i].style_id);
+        _zmap_set(&ctx->style, key, edits[i].value.u);
+        edits[i].value.u = value; // save previous value
+    }
+    return true;
+}
+
+void _ui_restore_styles(zw_base *ui) {
+    zw_cont *c = (zw_cont*)ui;
+    zstyle *edits = (zstyle*)((u8*)ui + zbuf_align(&ctx->ui, ui->bytes - c->style_edits * sizeof(zstyle)));
+    for (i32 i = 0; i < c->style_edits; i++) {
+        u32 *ptr = _zmap_get_ptr(&ctx->style, _zs_hash(edits[i].widget_id, edits[i].style_id));
+        u32 style_edit = *ptr;
+        *ptr = edits[i].value.u;
+        edits[i].value.u = style_edit;
+    }
+}
+
+i16 _ui_sz(zw_base *ui, bool axis, i16 bound) {
+    zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
+    bool applied = _ui_apply_styles(ui);
+    i16 sz = type.size(ui, axis, bound);
+    if(applied) _ui_restore_styles(ui);
+    i16 i = 2 + axis;
+    ui->used.e[i] = sz;
+    ui->bounds.e[i] = bound == Z_AUTO ? ui->used.e[i] : bound;
+    return ui->bounds.e[i];
+}
+
 void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
     ui->bounds.x = pos.x;
@@ -581,32 +616,20 @@ void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
         if(zindex >= _ui_widget(ctx->__focused)->zindex && _ui_clicked(ZM_LEFT_CLICK))
             ctx->__focused = _ui_index(ui);
     }
-    if(type.pos) // pos functions are only needed for containers to position children
+    if(type.pos) { // pos functions are only needed for containers to position children
+        bool applied = _ui_apply_styles(ui);
         type.pos(ui, *(zvec2*)&ui->used, zindex);
+        if(applied) _ui_restore_styles(ui);
+    }
 }
 
 void _ui_draw(zw_base *ui) {
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
-    zw_cont *c;
-    zstyle *edits;
-    // apply style changes for this container and it's children
-    if (ui->flags & ZF_CONTAINER) {
-        c = (zw_cont*)ui;
-        edits = (zstyle*)((u8*)ui + zbuf_align(&ctx->ui, ui->bytes - c->style_edits * sizeof(zstyle)));
-        for (i32 i = 0; i < c->style_edits; i++) {
-            u32 value, key = _zs_hash(edits[i].widget_id, edits[i].style_id);
-            if (!_zmap_get(&ctx->style, key, &value))
-                zui_log("WARNING: No default style for widget-id:%d,style-id:%d\n", edits[i].widget_id, edits[i].style_id);
-            _zmap_set(&ctx->style, key, edits[i].value.u);
-            edits[i].value.u = value; // save previous value
-        }
+    bool applied = _ui_apply_styles(ui);
+    if(ui->flags & ZF_CONTAINER)
         _push_clip_cmd(ui->used, ui->zindex);
-    }
     type.draw(ui);
-    if (~ui->flags & ZF_CONTAINER) return;
-    // restore original style
-    for (i32 i = 0; i < c->style_edits; i++)
-        _zmap_set(&ctx->style, _zs_hash(edits[i].widget_id, edits[i].style_id), edits[i].value.u);
+    if(applied) _ui_restore_styles(ui);
 }
 
 void zui_print_tree() {
@@ -787,25 +810,27 @@ void zui_render() {
 void zui_blank() {
     _ui_alloc(ZW_BLANK, sizeof(zw_base));
 }
-static zvec2 __zui_blank_size(zw_base *w, zvec2 bounds) { return bounds; }
-static void __zui_blank_draw(zw_base *w) {}
+static zvec2 _zui_blank_size(zw_base *w, zvec2 bounds) { return bounds; }
+static void _zui_blank_draw(zw_base *w) {}
 
 // returns true if window is displayed
 void zui_box() {
     _cont_alloc(ZW_BOX, sizeof(zw_box));
 }
-static i16 __zui_box_size(zw_box *box, bool axis, i16 bound) {
-    if (bound != Z_AUTO) bound -= ctx->padding.e[axis] * 2;
+static i16 _zui_box_size(zw_box *box, bool axis, i16 bound) {
+    zvec2 padding = zui_stylev(box->widget.id, ZSV_PADDING);
+    if (bound != Z_AUTO) bound -= padding.e[axis] * 2;
     i16 auto_sz = 0;
     FOR_CHILDREN(box)
         auto_sz = max(auto_sz, _ui_sz(child, axis, bound));
-    return (bound == Z_AUTO ? auto_sz : bound) + ctx->padding.e[axis] * 2;
+    return (bound == Z_AUTO ? auto_sz : bound) + padding.e[axis] * 2;
 }
-static void __zui_box_pos(zw_box *box, zvec2 pos, i32 zindex) {
-    zvec2 child_pos = { pos.x + ctx->padding.x, pos.y + ctx->padding.y };
+static void _zui_box_pos(zw_box *box, zvec2 pos, i32 zindex) {
+    zvec2 padding = zui_stylev(box->widget.id, ZSV_PADDING);
+    zvec2 child_pos = { pos.x + padding.x, pos.y + padding.y };
     FOR_CHILDREN(box) _ui_pos(child, child_pos, zindex);
 }
-static void __zui_box_draw(zw_box *box) {
+static void _zui_box_draw(zw_box *box) {
     _push_rect_cmd(box->widget.bounds, zui_stylec(ZW_BOX, ZSC_BACKGROUND), box->widget.zindex);
     FOR_CHILDREN(box) _ui_draw(child);
 }
@@ -815,11 +840,11 @@ void zui_window() {
     ctx->flags = 0;
     _cont_alloc(ZW_WINDOW, sizeof(zw_box));
 }
-static i16 __zui_window_size(zw_box *window, bool axis, i16 bound) {
+static i16 _zui_window_size(zw_box *window, bool axis, i16 bound) {
     FOR_CHILDREN(window) _ui_sz(child, axis, bound);
     return bound;
 }
-static void __zui_window_pos(zw_box *window, zvec2 pos) {
+static void _zui_window_pos(zw_box *window, zvec2 pos) {
     FOR_CHILDREN(window) _ui_pos(child, pos, 1);
 }
 
@@ -1230,6 +1255,8 @@ static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
             i16 sz = _ui_sz(child, axis, bound);
             used = max(used, sz);
         }
+        FOR_CHILDREN(data)
+            child->bounds.e[2 + axis] = used;
         return used;
     }
     i32 i = 0;
@@ -1259,12 +1286,13 @@ static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
 }
 
 static void _zui_layout_pos(zw_layout *data, zvec2 pos, i32 zindex) {
+    zvec2 spacing = zui_stylev(data->cont.id, ZSV_SPACING);
     FOR_CHILDREN(data) {
         _ui_pos(child, pos, zindex);
         if(data->widget.id == ZW_COL)
-            pos.y += ctx->padding.y + child->bounds.h;
+            pos.y += spacing.y + child->bounds.h;
         else
-            pos.x += ctx->padding.x + child->bounds.w;
+            pos.x += spacing.x + child->bounds.w;
     }
 }
 void zui_grid(i32 cols, i32 rows, float *col_row_settings) {
@@ -1535,11 +1563,16 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
     global_ctx.padding = (zvec2) { 15, 15 };
     global_ctx.latest = 0;
     ctx = &global_ctx;
-    zui_register(ZW_BLANK, __zui_blank_size, 0, __zui_blank_draw);
-    zui_register(ZW_WINDOW, __zui_window_size, __zui_window_pos, __zui_box_draw);
+    zui_register(ZW_BLANK, _zui_blank_size, 0, _zui_blank_draw);
 
-    zui_register(ZW_BOX, __zui_box_size, __zui_box_pos, __zui_box_draw);
-    zui_default_style(ZW_BOX, ZSC_BACKGROUND, (zcolor) { 50, 50, 50, 255 }, ZS_DONE);
+    zui_register(ZW_WINDOW, _zui_window_size, _zui_window_pos, _zui_box_draw);
+
+    zui_register(ZW_BOX, _zui_box_size, _zui_box_pos, _zui_box_draw);
+    zui_default_style(ZW_BOX,
+        ZSC_BACKGROUND, (zcolor) { 50, 50, 50, 255 },
+        ZSV_PADDING, (zvec2) { 15, 15 },
+        ZS_DONE);
+
     zui_register(ZW_LABEL, _zui_label_size, 0, _zui_label_draw);
     zui_default_style(ZW_LABEL, ZSC_FOREGROUND, (zcolor) { 250, 250, 250, 255 }, ZS_DONE);
 
@@ -1553,7 +1586,9 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
         ZSV_SPACING, (zvec2) { 15, 15 },
         ZSV_PADDING, (zvec2) { 0, 0 },
         ZS_DONE);
-    zui_register(ZW_BTN, __zui_box_size, __zui_box_pos, _zui_button_draw);
+    zui_register(ZW_BTN, _zui_box_size, _zui_box_pos, _zui_button_draw);
+    zui_default_style(ZW_BTN, ZSV_PADDING, (zvec2) { 10, 5 });
+
     zui_register(ZW_CHECK, _zui_check_size, 0, _zui_check_draw);
     zui_register(ZW_TEXT, _zui_text_size, 0, _zui_text_draw);
     zui_register(ZW_COMBO, _zui_combo_size, _zui_combo_pos, _zui_combo_draw);

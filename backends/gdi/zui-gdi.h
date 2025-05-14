@@ -30,7 +30,8 @@ typedef struct zui_gdi_ctx {
     WNDCLASSW wnd_class;
 	HWND wnd;
 	i32 width;
-	i32 height;    
+	i32 height;
+    i64 freq;
 	bool running;
 } zui_gdi_ctx;
 static zui_gdi_ctx app_ctx;
@@ -127,10 +128,13 @@ static LRESULT CALLBACK _win32_event(HWND wnd, UINT msg, WPARAM wparam, LPARAM l
         zui_key_mods(mod);
     } break;
 	case WM_CHAR: if (wparam >= 32 && wparam <= 127) { zui_key_char((i32)wparam); return 0; } break;
+    case WM_RBUTTONDBLCLK:
 	case WM_RBUTTONDOWN: zui_mouse_down(ZM_RIGHT_CLICK); SetCapture(wnd);  return 0;
 	case WM_RBUTTONUP:   zui_mouse_up(ZM_RIGHT_CLICK); ReleaseCapture();   return 0;
+    case WM_LBUTTONDBLCLK:
 	case WM_LBUTTONDOWN: zui_mouse_down(ZM_LEFT_CLICK); SetCapture(wnd);   return 0;
 	case WM_LBUTTONUP:   zui_mouse_up(ZM_LEFT_CLICK); ReleaseCapture();    return 0;
+    case WM_MBUTTONDBLCLK:
 	case WM_MBUTTONDOWN: zui_mouse_down(ZM_MIDDLE_CLICK); SetCapture(wnd); return 0;
 	case WM_MBUTTONUP:   zui_mouse_up(ZM_MIDDLE_CLICK); ReleaseCapture();  return 0;
 	case WM_MOUSEMOVE:   zui_mouse_move((zvec2) { LOWORD(lparam), HIWORD(lparam) }); return 0;
@@ -200,6 +204,9 @@ void _win32_setup(zui_gdi_args *args) {
         NULL,
         app_ctx.wnd_class.hInstance,
         NULL);
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    app_ctx.freq = freq.QuadPart;
 	app_ctx.window_dc = GetDC(app_ctx.wnd);
 	app_ctx.bitmap = CreateCompatibleBitmap(app_ctx.window_dc, args->width, args->height);
 	app_ctx.memory_dc = CreateCompatibleDC(app_ctx.window_dc);
@@ -224,6 +231,14 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
     switch(cmd->base.id) {
         case ZCMD_INIT: _win32_setup((zui_gdi_args*)user_data); break;
         case ZCMD_TICK: _win32_tick((zui_gdi_args*)user_data, true); break;
+        case ZCMD_TIMESTAMP: {
+            LARGE_INTEGER ts;
+            QueryPerformanceCounter(&ts);
+            // avoid integer overflow
+            i64 q = ts.QuadPart / app_ctx.freq;
+            i64 r = ts.QuadPart % app_ctx.freq;
+            cmd->timestamp.resp_ns = q * 1000000000 + r * 1000000000 / app_ctx.freq;
+        } break;
         case ZCMD_CLOSE: _win32_close((zui_gdi_args*)user_data); break;
         case ZCMD_RENDER_BEGIN:
             // set pen and brush for drawing
@@ -242,7 +257,7 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
             _win32_set_clipboard(cmd->set_clipboard.text, size);
         } break;
         case ZCMD_REG_FONT: {
-            TEXTMETRICW metric;
+            TEXTMETRICW metric = { 0 };
             HDC dc = CreateCompatibleDC(0);
             HANDLE handle = CreateFontA(cmd->font.size,
                 0,
@@ -264,16 +279,26 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
                 app_ctx.font_list[cmd->font.font_id] = handle;
                 app_ctx.font_dc[cmd->font.font_id] = dc;
             }
-            cmd->font.response = (handle != 0);
+            cmd->font.response_height = metric.tmHeight;
         } break;
-        case ZCMD_TXT_SZ: {
-            u16 font_id = cmd->txt_sz.font_id;
-            SIZE size;
-            i32 wsize = MultiByteToWideChar(CP_UTF8, 0, cmd->txt_sz.text, cmd->txt_sz.len, 0, 0);
-            WCHAR *wstr = _alloca(sizeof(WCHAR) * wsize);
-            MultiByteToWideChar(CP_UTF8, 0, cmd->txt_sz.text, cmd->txt_sz.len, wstr, wsize);
-            if (GetTextExtentPoint32W(app_ctx.font_dc[font_id], wstr, wsize, &size))
-                cmd->txt_sz.response = (zvec2) { size.cx, size.cy };
+        case ZCMD_GLYPH_SZ: {
+            u16 font_id = cmd->glyph_sz.font_id;
+            i32 codepoint = cmd->glyph_sz.codepoint;
+            i32 wsize = 1;
+            SIZE size = { 0 };
+            WCHAR pair[2];
+            if(codepoint <= 0xFFFF) {
+                pair[0] = (WCHAR)codepoint;
+            } else {
+                codepoint -= 0x10000;
+                pair[0] = (WCHAR)((codepoint >> 10) + 0xD800);
+                pair[1] = (WCHAR)((codepoint & 0x3FF) + 0xDC00);
+                wsize = 2;
+            }
+            if (GetTextExtentPoint32W(app_ctx.font_dc[font_id], pair, wsize, &size)) {
+                cmd->glyph_sz.response = (zvec2) { size.cx, size.cy };
+                zui_log("Size of %c: %dx%d\n", codepoint, size.cx, size.cy);
+            }
         } break;
 		case ZCMD_DRAW_CLIP: {
 			zrect clip = cmd->clip.rect;

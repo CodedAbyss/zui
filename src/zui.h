@@ -112,7 +112,8 @@ enum ZUI_CMDS {
     ZCMD_SET_CLIPBOARD,
     ZCMD_GET_CLIPBOARD,
         // _ZCMD_CLIPBOARD, // zcmd *zui_clipboard(char *);
-    ZCMD_TXT_SZ,
+    ZCMD_GLYPH_SZ,
+    ZCMD_TIMESTAMP
         // _ZCMD_GLYPH_SZ,  // zcmd *zui_set_glyph(u16 font_id, i32 codepoint, zvec2 sz);
 };
 
@@ -122,8 +123,9 @@ typedef struct zcmd_text { zcmd header; zvec2 pos;  zcolor color; u16 font_id; c
 typedef struct zcmd_bezier { zcmd header; zcolor color; i32 width; zvec2 points[0]; } zcmd_bezier;        // draw bezier
 typedef struct zcmd_get_clipboard { zcmd header; char *response; } zcmd_get_clipboard;                    // get clipboard
 typedef struct zcmd_set_clipboard { zcmd header; char text[0]; } zcmd_set_clipboard;                      // set clipboard
-typedef struct zcmd_reg_font { zcmd header; u16 font_id; u16 size; bool response; char family[0]; } zcmd_reg_font; // register font
-typedef struct zcmd_txt_sz { zcmd header; u16 font_id; u16 len; char *text; zvec2 response; } zcmd_txt_sz; // get text size
+typedef struct zcmd_reg_font { zcmd header; u16 font_id; u16 size; u16 response_height; char family[0]; } zcmd_reg_font; // register font
+typedef struct zcmd_glyph_sz { zcmd header; u16 font_id; i32 codepoint; zvec2 response; } zcmd_glyph_sz; // get text size
+typedef struct zcmd_timestamp { zcmd header; u64 resp_ns; } zcmd_timestamp;
 typedef union {
     zcmd base;
     zcmd_clip clip;
@@ -131,7 +133,8 @@ typedef union {
     zcmd_text text;
     zcmd_bezier bezier;
     zcmd_reg_font font;
-    zcmd_txt_sz txt_sz;
+    zcmd_glyph_sz glyph_sz;
+    zcmd_timestamp timestamp;
     zcmd_set_clipboard set_clipboard;
     zcmd_get_clipboard get_clipboard;
 } zcmd_any;
@@ -170,8 +173,10 @@ enum ZUI_WIDGETS {
     ZW_BOX,
     ZW_POPUP,
     ZW_LABEL,
+    ZW_LABELF,
     ZW_ROW,
     ZW_COL,
+    ZW_SCROLL,
     ZW_BTN,
     ZW_CHECK,
     ZW_TEXT,
@@ -197,7 +202,9 @@ typedef struct zw_text   { Z_WIDGET; char *buffer; i32 len; zd_text *state; } zw
 typedef struct zw_btn    { Z_CONT; u8 *state; } zw_btn;
 typedef struct zw_check  { Z_WIDGET; u8 *state; } zw_check;
 typedef struct zw_combo  { Z_WIDGET; char *tooltip, *csoptions; i32 *state; } zw_combo;
-typedef struct zw_label  { Z_WIDGET; char *text;  i32 len; } zw_label;
+typedef struct zw_label  { Z_WIDGET; char *text; i32 len; } zw_label;
+typedef struct zw_labelf { Z_WIDGET; char text[0]; } zw_labelf;
+typedef struct zw_scroll { Z_CONT; bool xbar, ybar; zvec2 *state; } zw_scroll;
 
 #ifdef ZUI_DEV
 #define FOR_CHILDREN(ui) for(zw_base* child = _ui_get_child((zw_base*)ui); child != (zw_base*)ui; child = _ui_next(child))
@@ -324,18 +331,21 @@ i32    zui_stylei(u16 widget_id, u16 style_id);
 
 //void zui_size(i32 w, i32 h);
 u16  zui_new_font(char *family, i32 size);
-zvec2 zui_text_sz(u16 id, char *text, i32 len);
+//zvec2 zui_text_sz(u16 id, char *text, i32 len);
 void zui_font(u16 id);
 
 void zui_end();
 void zui_window();
 zvec2 zui_window_sz();
 void zui_label(const char *text);
+void zui_labelf(const char *fmt, ...);
 void zui_sliderf(char *tooltip, f32 min, f32 max, f32 *value);
 void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
 i32  zui_combo(char *tooltip, char *csoptions, i32 *state);
-bool zui_button(const char *text, u8 *state);
+bool zui_button(u8 *state);
+bool zui_button_txt(const char *text, u8 *state);
 bool zui_check(u8 *state);
+void zui_scroll(bool xbar, bool ybar, zvec2 *state);
 void zui_validator(bool(*validator)(char *text));
 void zui_text(char *buffer, i32 len, zd_text *state);
 void zui_textbox(char *buffer, i32 len, i32 *state);

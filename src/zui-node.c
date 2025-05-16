@@ -270,7 +270,7 @@ void zui_node_register() {
     ZSC_NODE_FOUTPUT      = zui_new_sid();
     ZSC_NODE_INPUT        = zui_new_sid();
     ZSC_NODE_FINPUT       = zui_new_sid();
-    zui_register(ZW_NODE_EDITOR, _znode_editor_size, _znode_editor_pos, _znode_editor_draw);
+    zui_register(ZW_NODE_EDITOR, "node editor", _znode_editor_size, _znode_editor_pos, _znode_editor_draw);
     zui_default_style(ZW_NODE_EDITOR,
         ZSV_PADDING, (zvec2) { 10, 10 },
         ZSI_NODE_CONN_SPACING, 20,

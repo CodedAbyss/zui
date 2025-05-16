@@ -10,6 +10,7 @@
 
 // Represents a registry entry (defines functions for a widget-id)
 typedef struct zui_type {
+    char *name;
     i16  (*size)(void*, bool, i16);
     void (*pos)(void*, zvec2, i32);
     void (*draw)(void*);
@@ -190,10 +191,13 @@ typedef struct zui_ctx {
     i32 next_sid;
     zvec2 padding;
     u16 font_id;
+    u16 longest_registry_name;
     i64 *diagnostics;
     u32 flags;
     i32 latest;
     i32 style_edits;
+
+    zrect clip_rect;
     // We can combine registry / stack / draw, with a # to determine where to reset to
     zui_buf ui;
     zui_buf registry;   // lifetime: all the time. Changes are rare
@@ -401,7 +405,7 @@ i32 _ui_index(zw_base *ui) {
 }
 // Returns next ui element in the container. If none left, returns parent
 zw_base *_ui_next(zw_base *widget) {
-    return _ui_widget(widget->next);
+    return (widget->flags & ZF_LAST_CHILD) ? 0 : _ui_widget(widget->next);
 }
 // Allocates space on the top of the UI stack
 // Sets the widgets' flags, bytes, and id as necessary
@@ -437,11 +441,11 @@ void *_cont_alloc(i32 id, i32 size) {
     ctx->style_edits = 0;
     return cont;
 }
-void *_draw_alloc(u16 id, u16 size, i32 zindex) {
+zcmd_any *_draw_alloc(u16 id, u16 size, i32 zindex) {
     u64 *index = zbuf_alloc(&ctx->zdeque, sizeof(u64));
-    zcmd *ret = (zcmd*)zbuf_alloc(&ctx->draw, size);
-    ret->id = id;
-    ret->bytes = size;
+    zcmd_any *ret = (zcmd_any*)zbuf_alloc(&ctx->draw, size);
+    ret->base.id = id;
+    ret->base.bytes = size;
     // high bytes represent z-index, low bits are index into the pointer
     // we can sort this deque as 64 bit integers: which will sort zindex first, then by insertion order
     *index = ((u64)zindex << 32) | ((u8*)ret - ctx->draw.data);
@@ -455,23 +459,23 @@ zrect _rect_pad(zrect r, zvec2 padding) {
     return (zrect) { r.x - padding.x, r.y - padding.y, r.w + padding.x * 2, r.h + padding.y * 2 };
 }
 void _push_rect_cmd(zrect rect, zcolor color, i32 zindex) {
-    zcmd_rect *r = _draw_alloc(ZCMD_DRAW_RECT, sizeof(zcmd_rect), zindex);
+    zcmd_rect *r = &_draw_alloc(ZCMD_DRAW_RECT, sizeof(zcmd_rect), zindex)->rect;
     r->rect = rect;
     r->color = color;
 }
 void _push_clip_cmd(zrect rect, i32 zindex) {
-    zcmd_clip *r = _draw_alloc(ZCMD_DRAW_CLIP, sizeof(zcmd_clip), zindex);
+    zcmd_clip *r = &_draw_alloc(ZCMD_DRAW_CLIP, sizeof(zcmd_clip), zindex)->clip;
     r->rect = rect;
 }
 void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex) {
-    zcmd_text *r = _draw_alloc(ZCMD_DRAW_TEXT, sizeof(zcmd_text) + len, zindex);
+    zcmd_text *r = &_draw_alloc(ZCMD_DRAW_TEXT, sizeof(zcmd_text) + len, zindex)->text;
     r->font_id = font_id;
     r->pos = coord;
     r->color = color;
     memcpy(r->text, text, len);
 }
 void _push_bezier_cmd(i32 cnt, zvec2 *points, i32 width, zcolor color, i32 zindex) {
-    zcmd_bezier *b = _draw_alloc(ZCMD_DRAW_BEZIER, sizeof(zcmd_bezier) + cnt * sizeof(zvec2), zindex);
+    zcmd_bezier *b = &_draw_alloc(ZCMD_DRAW_BEZIER, sizeof(zcmd_bezier) + cnt * sizeof(zvec2), zindex)->bezier;
     b->color = color;
     b->width = width;
     for(i32 i = 0; i < cnt; i++) b->points[i] = points[i];
@@ -543,7 +547,7 @@ zw_base *_ui_find_with_flag(zw_base *start, u32 flags) {
     return 0;
 }
 zw_base *_ui_get_child(zw_base *ui) {
-    if (~ui->flags & ZF_PARENT) return ui;
+    if (~ui->flags & ZF_PARENT) return 0;
     return (zw_base*)((u8*)ui + ((ui->bytes + ctx->ui.alignsub1) & ~ctx->ui.alignsub1));
 }
 bool _ui_pressed(i32 buttons) {
@@ -568,14 +572,11 @@ bool _ui_released(i32 buttons) {
 }
 
 void _ui_print(zw_base *cmd, int indent) {
-    zui_log("%04x | ", _ui_index(cmd));
-    for (i32 i = 0; i < indent; i++)
-        zui_log("    ");    
-    zrect b = cmd->bounds;
-    zrect u = cmd->used;
-    zui_log("(id: %d, next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", cmd->id, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
+    zrect b = cmd->bounds, u = cmd->used;
+    char *name = ((zui_type*)ctx->registry.data)[cmd->id].name;
+    zui_log("%04x | %-*s[%s] (next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", _ui_index(cmd), indent, "", name, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
     FOR_CHILDREN(cmd)
-        _ui_print(child, indent + 1);
+        _ui_print(child, indent + 2);
 }
 
 zvec2 _ui_mpos() {
@@ -587,18 +588,7 @@ zvec2 _ui_mdelta() {
 }
 
 bool _ui_is_child(zw_base *container, zw_base *other) {
-    if(other < container) return false; // children must have a greater index (ptr)
-    if(other == container) return true; // we consider a ui to be a child of itself (useful for hovering / focusing)
-    i32 index = _ui_index(other);
-    if(_ui_index(container) < index && index < container->next) // if index of other is between the container and its sibling, it's a child
-        return true;
-    // TODO: this can likely be improved.
-    // Worst case: when container->next is its parent __ui_is_child checks all children
-    // loop through children, if any of the children have a greater index than other, other is a sub-child
-    FOR_CHILDREN(container)
-        if(child >= other)
-            return true;
-    return false;
+    return container <= other && other < _ui_widget(container->next);
 }
 bool _ui_hovered(zw_base *ui) { return ui == _ui_widget(ctx->hovered); }
 bool _ui_cont_hovered(zw_base *ui) { return _ui_is_child(ui, _ui_widget(ctx->hovered)); }
@@ -675,12 +665,17 @@ void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
 }
 
 void _ui_draw(zw_base *ui) {
+    static i32 indent = 0;
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
-    bool applied = _ui_apply_styles(ui);
-    if(ui->flags & ZF_CONTAINER)
-        _push_clip_cmd(ui->used, ui->zindex);
-    type.draw(ui);
-    if(applied) _ui_restore_styles(ui);
+    zrect prev_clip = ctx->clip_rect;
+    if(_rect_intersect(ui->bounds, prev_clip, &ctx->clip_rect)) {
+        _push_clip_cmd(ctx->clip_rect, ui->zindex);
+        bool applied = _ui_apply_styles(ui);
+        type.draw(ui);
+        if(applied) _ui_restore_styles(ui);
+        _push_clip_cmd(prev_clip, ui->zindex);
+    }
+    ctx->clip_rect = prev_clip;
 }
 
 void zui_print_tree() {
@@ -692,9 +687,13 @@ void zui_print_tree() {
 i32 zui_new_wid() { return ctx->next_wid++; }
 i32 zui_new_sid() { return ctx->next_sid++; }
 
-void zui_register(i32 widget_id, void *size_cb, void *pos_cb, void *draw_cb) {
+void zui_register(i32 widget_id, char *widget_name, void *size_cb, void *pos_cb, void *draw_cb) {
     ctx->registry.used = (widget_id - ZW_FIRST) * sizeof(zui_type);
     zui_type *t = zbuf_alloc(&ctx->registry, sizeof(zui_type));
+    u16 len = strlen(widget_name);
+    if(len > ctx->longest_registry_name)
+        ctx->longest_registry_name = len;
+    t->name = widget_name;
     t->size = (i16(*)(void*, bool, i16))size_cb;
     t->pos = (void(*)(void*, zvec2, i32))pos_cb;
     t->draw = (void(*)(void*))draw_cb;
@@ -759,8 +758,10 @@ void zui_end() {
     // if active container isn't the most recent element set parent flag (it has children)
     zw_base* latest = _ui_widget(ctx->latest);
     if (container != ctx->latest) {
+        latest->flags |= ZF_LAST_CHILD;
         _ui_widget(container)->flags |= ZF_PARENT;
-        ctx->latest = latest->next = container;
+        latest->next = ctx->ui.used;
+        ctx->latest = container;
     }
 }
 
@@ -827,6 +828,7 @@ void zui_render() {
 
     // generate draw commands
     i64 draw_time = zui_ts();
+    ctx->clip_rect = root->used;
     _ui_draw(root);
     draw_time = zui_ts() - draw_time;
 
@@ -1008,10 +1010,17 @@ void zui_scroll(bool xbar, bool ybar, zvec2 *state) {
 
 static i16 _zui_scroll_size(zw_scroll *s, bool axis, i16 bound) {
     i16 m = 0;
+    if(bound == Z_AUTO) {
+        FOR_CHILDREN(s) {
+            i16 sz = _ui_sz(child, axis, bound);
+            if(sz > m) m = sz;
+        }
+        return m;
+    }
+
+    i16 child_bound = bound - 50;
     FOR_CHILDREN(s)
-        m = max(m, _ui_sz(child, axis, bound));
-    if(bound == Z_AUTO) return m;
-    if(axis ? s->ybar : s->xbar) bound += 5;
+        _ui_sz(child, axis, child_bound);
     return bound;
 }
 
@@ -1069,6 +1078,8 @@ bool zui_button_txt(const char *text, u8 *state) {
 
 static void _zui_button_draw(zw_btn *btn) {
     zcolor c = (zcolor) { 80, 80, 80, 255 };
+    //zui_log("button %x-%x", _ui_index(&btn->widget));
+
     if(_ui_cont_hovered(&btn->widget)) {// hovered
         *btn->state = _ui_clicked(ZM_LEFT_CLICK);
         if(_ui_pressed(ZM_LEFT_CLICK))
@@ -1434,7 +1445,6 @@ static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
     i16 used = 0;
     if(data->count != data->cont.children)
         zui_log("ERROR: expected %d children, has %d\n", data->count, data->cont.children);
-
     if(axis != AXIS) { // not primary axis of layout. IE: Row & Y axis
         FOR_CHILDREN(data) {
             i16 sz = _ui_sz(child, axis, bound);
@@ -1444,8 +1454,7 @@ static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
             child->bounds.e[2 + axis] = used;
         return used;
     }
-    i32 i = 0;
-    i32 fillcnt = 0;
+    i32 i = 0, fillcnt = 0;
     zvec2 spacing = zui_stylev(data->cont.id, ZSV_SPACING);
     used = (data->count - 1) * spacing.e[axis];
     FOR_CHILDREN(data) {
@@ -1454,24 +1463,13 @@ static i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
         else fillcnt++;
         i++;
     }
-
-    if(bound == Z_AUTO && fillcnt > 0) {
-        i = 0;
-        FOR_CHILDREN(data) {
-            i32 leftover = bound - used;
-            if(data->sizes[i++] < 0)
-                _ui_sz(child, axis, 0);
-        }
-        //zui_log("ERROR: row/col cannot be autosized if there is a child sized to fill contents.\n");
-    } else {
-        i = 0;
-        FOR_CHILDREN(data) {
-            i32 leftover = bound - used;
-            if(data->sizes[i++] < 0) {
-                used += _ui_sz(child, axis, leftover / fillcnt);
-                fillcnt--;
-            }
-        }
+    if(!fillcnt) return used;
+    i = 0;
+    FOR_CHILDREN(data) {
+        if(data->sizes[i++] >= 0) continue;
+        i32 sz = bound == Z_AUTO ? Z_AUTO : (bound - used) / fillcnt;
+        used += _ui_sz(child, axis, sz);
+        fillcnt--;
     }
     return used;
 }
@@ -1754,39 +1752,39 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
     global_ctx.padding = (zvec2) { 15, 15 };
     global_ctx.latest = 0;
     ctx = &global_ctx;
-    zui_register(ZW_BLANK, _zui_blank_size, 0, _zui_blank_draw);
+    zui_register(ZW_BLANK, "blank", _zui_blank_size, 0, _zui_blank_draw);
 
-    zui_register(ZW_WINDOW, _zui_window_size, _zui_window_pos, _zui_box_draw);
+    zui_register(ZW_WINDOW, "window", _zui_window_size, _zui_window_pos, _zui_box_draw);
 
-    zui_register(ZW_BOX, _zui_box_size, _zui_box_pos, _zui_box_draw);
+    zui_register(ZW_BOX, "box", _zui_box_size, _zui_box_pos, _zui_box_draw);
     zui_default_style(ZW_BOX,
         ZSC_BACKGROUND, (zcolor) { 50, 50, 50, 255 },
         ZSV_PADDING, (zvec2) { 15, 15 },
         ZS_DONE);
 
-    zui_register(ZW_LABEL, _zui_label_size, 0, _zui_label_draw);
-    zui_register(ZW_LABELF, _zui_labelf_size, 0, _zui_labelf_draw);
+    zui_register(ZW_LABEL, "label", _zui_label_size, 0, _zui_label_draw);
+    zui_register(ZW_LABELF, "labelf", _zui_labelf_size, 0, _zui_labelf_draw);
     zui_default_style(ZW_LABEL, ZSC_FOREGROUND, (zcolor) { 250, 250, 250, 255 }, ZS_DONE);
 
-    zui_register(ZW_COL, _zui_layout_size, _zui_layout_pos, _zui_layout_draw);
+    zui_register(ZW_COL, "column", _zui_layout_size, _zui_layout_pos, _zui_layout_draw);
     zui_default_style(ZW_COL,
         ZSV_SPACING, (zvec2) { 15, 15 },
         ZSV_PADDING, (zvec2) { 0, 0 },
         ZS_DONE);
-    zui_register(ZW_ROW, _zui_layout_size, _zui_layout_pos, _zui_layout_draw);
+    zui_register(ZW_ROW, "row", _zui_layout_size, _zui_layout_pos, _zui_layout_draw);
     zui_default_style(ZW_ROW,
         ZSV_SPACING, (zvec2) { 15, 15 },
         ZSV_PADDING, (zvec2) { 0, 0 },
         ZS_DONE);
-    zui_register(ZW_BTN, _zui_box_size, _zui_box_pos, _zui_button_draw);
+    zui_register(ZW_BTN, "btn", _zui_box_size, _zui_box_pos, _zui_button_draw);
     zui_default_style(ZW_BTN, ZSV_PADDING, (zvec2) { 10, 5 });
 
-    zui_register(ZW_SCROLL, _zui_scroll_size, _zui_scroll_pos, _zui_scroll_draw);
+    zui_register(ZW_SCROLL, "scroll", _zui_scroll_size, _zui_scroll_pos, _zui_scroll_draw);
 
-    zui_register(ZW_CHECK, _zui_check_size, 0, _zui_check_draw);
-    zui_register(ZW_TEXT, _zui_text_size, 0, _zui_text_draw);
-    zui_register(ZW_COMBO, _zui_combo_size, _zui_combo_pos, _zui_combo_draw);
-    zui_register(ZW_GRID, _zui_grid_size, _zui_grid_pos, _zui_grid_draw);
+    zui_register(ZW_CHECK, "check", _zui_check_size, 0, _zui_check_draw);
+    zui_register(ZW_TEXT, "text", _zui_text_size, 0, _zui_text_draw);
+    zui_register(ZW_COMBO, "combo", _zui_combo_size, _zui_combo_pos, _zui_combo_draw);
+    zui_register(ZW_GRID, "grid", _zui_grid_size, _zui_grid_pos, _zui_grid_draw);
     zui_default_style(ZW_GRID,
         ZSC_BACKGROUND, (zcolor) { 30, 30, 30, 255 },
         ZSC_FOREGROUND, (zcolor) { 150, 150, 150, 255 }, // border color
@@ -1795,7 +1793,7 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
         ZSV_BORDER,     (zvec2)  { 0, 0 },
         ZS_DONE);
 
-    zui_register(ZW_TABSET, _zui_tabset_size, _zui_tabset_pos, _zui_tabset_draw);
+    zui_register(ZW_TABSET, "tabset", _zui_tabset_size, _zui_tabset_pos, _zui_tabset_draw);
     zui_default_style(ZW_TABSET,
         ZSC_UNFOCUSED,  (zcolor) { 30, 30, 30, 255 },
         ZSC_BACKGROUND, (zcolor) { 50, 50, 50, 255 },

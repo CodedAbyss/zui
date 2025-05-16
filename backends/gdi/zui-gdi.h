@@ -295,15 +295,14 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
                 pair[1] = (WCHAR)((codepoint & 0x3FF) + 0xDC00);
                 wsize = 2;
             }
-            if (GetTextExtentPoint32W(app_ctx.font_dc[font_id], pair, wsize, &size)) {
+            if (GetTextExtentPoint32W(app_ctx.font_dc[font_id], pair, wsize, &size))
                 cmd->glyph_sz.response = (zvec2) { size.cx, size.cy };
-                zui_log("Size of %c: %dx%d\n", codepoint, size.cx, size.cy);
-            }
         } break;
 		case ZCMD_DRAW_CLIP: {
 			zrect clip = cmd->clip.rect;
 			SelectClipRgn(app_ctx.memory_dc, 0);
 			IntersectClipRect(app_ctx.memory_dc, clip.x, clip.y, clip.x + clip.w, clip.y + clip.h);
+            //zui_log("CLIPPED: (%d,%d,%d,%d)\n", clip.x, clip.y, clip.w, clip.h);
 		} break;
 		case ZCMD_DRAW_RECT: {
 			zcolor c = cmd->rect.color;
@@ -312,6 +311,7 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
 			RECT rect = { r.x, r.y, r.x + r.w, r.y + r.h };
 			SetBkColor(app_ctx.memory_dc, color);
 			ExtTextOutW(app_ctx.memory_dc, 0, 0, ETO_OPAQUE, &rect, NULL, 0, NULL);
+            //zui_log("RECT: (%d,%d,%d,%d)\n", r.x, r.y, r.w, r.h);
 		} break;
 		case ZCMD_DRAW_TEXT: {
             int len = cmd->base.bytes - sizeof(zcmd_text);

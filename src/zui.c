@@ -311,9 +311,9 @@ i64 zui_ts() {
 // Returns the width and height of text given the font id [S]
 i32 zui_text_width(u16 font_id, char *text, i32 len) {
     u32 codepoint, v;
-    i32 n, ret = 0;
+    i32 ret = 0;
     i64 tmp = zui_ts();
-    for(;(n = utf8_val(text, &codepoint)) && codepoint; text += n, ret += v) {
+    for(i32 n, i = 0; (n = utf8_val(&text[i], &codepoint)) && codepoint && i < len; i += n, ret += v) {
         u32 hash = _zgc_hash(font_id, (i32)codepoint);
         if(_zmap_get(&ctx->glyphs, hash, &v))
             continue;
@@ -708,13 +708,19 @@ void zui_fill(u32 axis) {
 }
 
 u16 zui_new_font(char *family, i32 size) {
-    i32 bytes = sizeof(zcmd_reg_font) + strlen(family);
+    i32 len = strlen(family), bytes = sizeof(zcmd_reg_font) + len + 1;
     zcmd_reg_font *font = _alloca(bytes);
     font->header = (zcmd) { ZCMD_REG_FONT, bytes };
     font->font_id = ctx->font_cnt;
     font->size = size;
-    memcpy(font->family, family, bytes - sizeof(zcmd_reg_font));
+    font->response_height = 0;
+    memcpy(font->family, family, len);
+    font->family[len] = 0;
     ctx->renderer((zcmd_any*)font, ctx->user_data);
+    if(!font->response_height) {
+        zui_log("Failed to create font %s\n", family);
+        return 0;
+    }
     _zmap_set(&ctx->glyphs, _zgc_hash(ctx->font_cnt, 0x1FFFFF), font->response_height);
     return ctx->font_cnt++;
 }
@@ -1015,10 +1021,10 @@ static i16 _zui_scroll_size(zw_scroll *s, bool axis, i16 bound) {
             i16 sz = _ui_sz(child, axis, bound);
             if(sz > m) m = sz;
         }
-        return m;
+        return m + 5;
     }
 
-    i16 child_bound = bound - 50;
+    i16 child_bound = bound - 5;
     FOR_CHILDREN(s)
         _ui_sz(child, axis, child_bound);
     return bound;

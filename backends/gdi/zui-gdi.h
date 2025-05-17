@@ -278,8 +278,9 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
                 GetTextMetricsW(dc, &metric);
                 app_ctx.font_list[cmd->font.font_id] = handle;
                 app_ctx.font_dc[cmd->font.font_id] = dc;
-            }
-            cmd->font.response_height = metric.tmHeight;
+                cmd->font.response_height = metric.tmHeight;
+            } else
+                cmd->font.response_height = 0;
         } break;
         case ZCMD_GLYPH_SZ: {
             u16 font_id = cmd->glyph_sz.font_id;

@@ -208,15 +208,17 @@ typedef struct zw_cont { u16 id, bytes; i32 next, zindex, flags; zrect bounds; z
 #define Z_CONT   union { zcmd cmd; zw_base widget; zw_cont cont; }
 
 typedef struct zd_text { i32 flags, index, ofs, selection; } zd_text;
+typedef struct zd_combo { u8 index; u8 toggle; u8 dropdown; u8 _; } zd_combo;
 
 typedef struct zw_box    { Z_CONT; } zw_box;
 typedef struct zw_layout { Z_CONT; i32 count; i16 sizes[0]; } zw_layout;
+typedef struct zw_selector { Z_CONT; i32 *state; i32 count; i16 sizes[0]; } zw_selector;
 typedef struct zw_grid   { Z_CONT; u8 rows, cols, padx, pady; float data[1]; } zw_grid;
 typedef struct zw_tabset { Z_CONT; char *cstabs; i32 *state; u16 label_cnt; u16 tabheight; } zw_tabset;
 typedef struct zw_text   { Z_WIDGET; char *buffer; i32 len; zd_text *state; } zw_text;
-typedef struct zw_btn    { Z_CONT; u8 *state; } zw_btn;
+typedef struct zw_btn    { Z_CONT; u8 *state, id; } zw_btn;
 typedef struct zw_check  { Z_WIDGET; u8 *state; } zw_check;
-typedef struct zw_combo  { Z_CONT; char *tooltip, *csoptions; i32 *state; } zw_combo;
+typedef struct zw_combo  { Z_CONT; zd_combo *state; char *tooltip, *csoptions; } zw_combo;
 typedef struct zw_label  { Z_WIDGET; char *text; i32 len; } zw_label;
 typedef struct zw_labelf { Z_WIDGET; char text[0]; } zw_labelf;
 typedef struct zw_scroll { Z_CONT; bool xbar, ybar; zvec2 *state; } zw_scroll;
@@ -356,7 +358,8 @@ ZUI_API void zui_label(const char *text);
 ZUI_API void zui_labelf(const char *fmt, ...);
 ZUI_API void zui_sliderf(char *tooltip, f32 min, f32 max, f32 *value);
 ZUI_API void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
-ZUI_API i32  zui_combo(char *tooltip, char *csoptions, i32 *state);
+ZUI_API i32  zui_combo(char *tooltip, char *csoptions, zd_combo *state);
+ZUI_API bool zui_radio_btn(u8 *state, u8 id);
 ZUI_API bool zui_button(u8 *state);
 ZUI_API bool zui_button_txt(const char *text, u8 *state);
 ZUI_API bool zui_check(u8 *state);

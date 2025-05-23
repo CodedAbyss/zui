@@ -421,7 +421,7 @@ void *_ui_alloc(i32 id, i32 size) {
     widget->id = id;
     widget->bytes = size;
     widget->flags = ctx->flags;
-    ctx->flags &= ~(ZF_FILL_X | ZF_FILL_Y);
+    ctx->flags &= ~(ZF_FILL_X | ZF_FILL_Y | ZF_POPUP);
     return widget;
 }
 // An extention to _ui_alloc for containers, setting the ZF_CONTAINER flag
@@ -623,6 +623,7 @@ void _ui_restore_styles(zw_base *ui) {
 }
 
 i16 _ui_sz(zw_base *ui, bool axis, i16 bound) {
+    if(!ui) return 0;
     static bool recalc = false;
     if(recalc && (~ui->flags & ZF_CONTAINER)) {
         if(bound == Z_AUTO) return ui->bounds.sz.e[axis];
@@ -644,6 +645,7 @@ i16 _ui_sz(zw_base *ui, bool axis, i16 bound) {
 }
 
 void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
+    if(!ui) return;
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
     ui->bounds.x = pos.x;
     ui->bounds.y = pos.y;
@@ -1068,29 +1070,35 @@ ZUI_PRIVATE void _zui_scroll_draw(zw_scroll *s, zvec2 pos, i32 zindex) {
 
 
 // BUTTON
-bool zui_button(u8 *state) {
+bool zui_radio_btn(u8 *state, u8 id) {
     zw_btn *l = _cont_alloc(ZW_BTN, sizeof(zw_btn));
     l->state = state;
-    return *state;
+    l->id = id;
+    bool ret = (*state == id);
+    if(id == 255) *state = 0;
+    return ret;
+}
+bool zui_button(u8 *state) {
+    return zui_radio_btn(state, 255);
 }
 bool zui_button_txt(const char *text, u8 *state) {
-    zw_btn *l = _cont_alloc(ZW_BTN, sizeof(zw_btn));
-    l->state = state;
+    bool ret = zui_button(state);
     zui_label(text);
     zui_end();
-    return *state;
+    return ret;
 }
-
 // A button is just a clickable box
 // This allows trivial addition of various button kinds: with images, multiple labels, etc.
 // Reuse __zui_box_size for sizing
 
 ZUI_PRIVATE void _zui_button_draw(zw_btn *btn) {
     zcolor c = (zcolor) { 80, 80, 80, 255 };
-    //zui_log("button %x-%x", _ui_index(&btn->widget));
-
-    if(_ui_cont_hovered(&btn->widget)) {// hovered
-        *btn->state = _ui_clicked(ZM_LEFT_CLICK);
+    if(*btn->state == btn->id)
+        c = (zcolor) { 120, 120, 120, 255 };
+    else if(_ui_cont_hovered(&btn->widget)) {// hovered
+        bool clicked = _ui_clicked(ZM_LEFT_CLICK);
+        if(clicked) *btn->state = btn->id;
+        else if(*btn->state == btn->id) *btn->state = 0;
         if(_ui_pressed(ZM_LEFT_CLICK))
             c = (zcolor) { 120, 120, 120, 255 };
         else
@@ -1135,101 +1143,115 @@ ZUI_PRIVATE void _zui_check_draw(zw_check *data) {
 void zui_sliderf(char *tooltip, f32 min, f32 max, f32 *value);
 void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
 
-char *_zui_combo_get_option(zw_combo *c, i32 n, i32 *len) {
-    if(n < 0) {
-        *len = (i32)strlen(c->tooltip);
-        return c->tooltip;
-    }
-    char *option = c->csoptions, *s = c->csoptions;
-    i32 cnt = 0;
-    for(; *s; s++) {
-        if(*s != ',') continue;
-        if(cnt == n) {
-            *len = (i32)(s - option);
-            return option;
-        }
-        cnt++;
-        option = s + 1;
-    }
-    if (cnt != n) return 0;
-    *len = (i32)(s - option);
-    return option;
+i32 strcom(char *str) {
+    i32 i = 0;
+    while(str[i] != ',' && str[i]) i++;
+    return i;
 }
+// char *_zui_combo_opt(char *start, i32 n, i32 *len) {
+//     char *i, *s = start;
+//     do {
+//         *len = (i = strchr(s, ',')) ? i - s : strlen(s);
+//         if(!--n) return s;
+//     } while(i && (s = i + 1));
+//     return 0;
+// }
+
 // create a combo box with comma-seperated options
-i32 zui_combo(char *tooltip, char *csoptions, i32 *state) {
+i32 zui_combo(char *tooltip, char *csoptions, zd_combo *state) {
     zw_combo *c = _cont_alloc(ZW_COMBO, sizeof(zw_combo));
     c->tooltip = tooltip;
     c->csoptions = csoptions;
     c->state = state;
-    c->cont.flags |= ZF_POPUP;
-    char *i, *s = csoptions;
-    do {
-        i32 len = (i = strchr(s, ',')) ? i - s : strlen(s);
-        zui_box();
-        zui_label_n(s, len);
+    zui_style(ZW_ROW, ZSV_SPACING, (zvec2) { 0, 0 }, 0);
+    state->dropdown ^= zui_button(&state->toggle); {
+        zui_row(3, Z_AUTO, Z_FILL, Z_AUTO);
+        if(!state->index)
+            zui_label(tooltip);
+        else {
+            char *s = csoptions;
+            for(i32 i = 1; i < state->index; i++)
+                s += strcom(s) + 1;
+            zui_label_n(s, strcom(s));
+        }
+        zui_blank();
+        zui_labelf(state->dropdown ? "\xE2\x96\xBC" : "\xE2\x97\x84");
         zui_end();
-    } while(i && (s = i + 1));
+    } zui_end();
+    if(state->dropdown) {
+        ctx->flags |= ZF_POPUP;
+        zui_style(ZW_COL, ZSV_SPACING, (zvec2) { 0, 0 }, 0);
+        zui_col(Z_AUTO_ALL);
+        i32 n = 1, len;
+        char *s = csoptions;
+        do {
+            if(zui_radio_btn(&state->index, n++))
+                state->dropdown = false;
+            zui_label_n(s, len = strcom(s));
+            zui_end();
+        } while(s += len + 1, s[-1]);
+        zui_end();
+    }
     zui_end();
-    return (*state >> 1) - 1;
+    return 0;
 }
 ZUI_PRIVATE i16 _zui_combo_size(zw_combo *data, bool axis, i16 bound) {
+    zw_base *child = _ui_get_child(&data->widget);
+    i16 sz = _ui_sz(child, axis, axis ? Z_AUTO : bound);
     if(bound == Z_AUTO) {
-        i16 sz = zui_text_sz[axis](ctx->font_id, data->tooltip, strlen(data->tooltip)) + 10;
-        FOR_CHILDREN(data) {
-            i16 child_sz = _ui_sz(child, axis, Z_AUTO);
-            if(!axis)
-                sz = max(sz, child_sz);
-        }
-        return sz;
+        i16 col_sz = _ui_sz(_ui_next(child), axis, Z_AUTO);
+        return axis ? sz : max(col_sz, sz);
     }
-    FOR_CHILDREN(data) _ui_sz(child, axis, bound);
-    return bound;
+    _ui_sz(_ui_next(child), axis, axis ? Z_AUTO : bound);
+    return axis ? sz : bound;
 }
 ZUI_PRIVATE void _zui_combo_pos(zw_combo *data, zvec2 pos, i32 zindex) {
-    if (~*data->state & 1) return;
+    zw_base *child = _ui_get_child(&data->widget);
+    _ui_pos(child, pos, zindex);
     pos.y += data->widget.used.h;
-    zw_base *background = _ui_get_child(&data->widget);
-    i32 prev = ctx->flags;
-    ctx->flags = ZJ_LEFT;
-    zindex += 1;
-    _ui_pos(background, pos, zindex);
-    FOR_SIBLINGS(data, _ui_next(background)) {
-        _ui_pos(child, pos, zindex);
-        pos.y += child->used.h;
-    }
-    ctx->flags = prev;
+    _ui_pos(_ui_next(child), pos, zindex);
 }
 ZUI_PRIVATE void _zui_combo_draw(zw_combo *box) {
-    bool is_focused = &box->widget == _ui_widget(ctx->focused);
-    i32 selected_index = (*box->state >> 1) - 1;
-    _push_rect_cmd(box->widget.used, (zcolor) { 70, 70, 70, 255 }, box->widget.zindex);
-
-    i32 len;
-    char *text = _zui_combo_get_option(box, selected_index, &len);
-    zvec2 pos = { box->widget.used.x + ctx->padding.x, box->widget.used.y + ctx->padding.y };
-    _push_text_cmd(ctx->font_id, pos, (zcolor) { 230, 230, 230, 255 }, text, len, box->widget.zindex);
-
-    // this detects whether our current widget (not any children) are focused
-    if(&box->widget == _ui_widget(ctx->focused) && _ui_clicked(ZM_LEFT_CLICK)) {
-        *box->state ^= 1;
-        return;
-    }
-    if(~*box->state & 1) return;
-    zw_base *background = _ui_get_child(&box->widget);
-    _push_clip_cmd(background->used, background->zindex);
-    _push_rect_cmd(background->used, (zcolor) { 80, 80, 80, 255 }, background->zindex);
-    i32 i = 0;
-    FOR_CHILDREN(box) {
-        if(_ui_cont_focused(child) && _ui_clicked(ZM_LEFT_CLICK)) {
-            *box->state = ((i + 1) << 1); // close popup and set selected
-        } else if(_ui_cont_hovered(child)) {
-            _push_rect_cmd(child->used, (zcolor) { 120, 120, 120, 255 }, child->zindex);
-        } else if(i == selected_index) {
-            _push_rect_cmd(child->used, (zcolor) { 100, 100, 100, 255 }, child->zindex);
-        }
-        _ui_draw(_ui_get_child(child));
-        i++;
-    }
+    // zcolor foreground = (zcolor) { 70, 70, 70, 255 };
+    // zcolor text_color = (zcolor) { 230, 230, 230, 255 };
+    // char *txt[] = {
+    //     box->tooltip,"1","2","3"
+    // };
+    // 
+    // _push_rect_cmd(box->widget.used, foreground, box->widget.zindex);
+    // _push_text_cmd(ctx->font_id, _vec_add(box->widget.used.pos, (zvec2) { 5, 5 }), text_color, txt[*box->state], 1, box->widget.zindex);
+    FOR_CHILDREN(box)
+        _ui_draw(child);
+    // bool is_focused = &box->widget == _ui_widget(ctx->focused);
+    // i32 selected_index = (*box->state >> 1) - 1;
+    // _push_rect_cmd(box->widget.used, (zcolor) { 70, 70, 70, 255 }, box->widget.zindex);
+    //
+    // i32 len;
+    // char *text = _zui_combo_get_option(box, selected_index, &len);
+    // zvec2 pos = { box->widget.used.x + ctx->padding.x, box->widget.used.y + ctx->padding.y };
+    // _push_text_cmd(ctx->font_id, pos, (zcolor) { 230, 230, 230, 255 }, text, len, box->widget.zindex);
+    //
+    // // this detects whether our current widget (not any children) are focused
+    // if(&box->widget == _ui_widget(ctx->focused) && _ui_clicked(ZM_LEFT_CLICK)) {
+    //     *box->state ^= 1;
+    //     return;
+    // }
+    // if(~*box->state & 1) return;
+    // zw_base *background = _ui_get_child(&box->widget);
+    // _push_clip_cmd(background->used, background->zindex);
+    // _push_rect_cmd(background->used, (zcolor) { 80, 80, 80, 255 }, background->zindex);
+    // i32 i = 0;
+    // FOR_CHILDREN(box) {
+    //     if(_ui_cont_focused(child) && _ui_clicked(ZM_LEFT_CLICK)) {
+    //         *box->state = ((i + 1) << 1); // close popup and set selected
+    //     } else if(_ui_cont_hovered(child)) {
+    //         _push_rect_cmd(child->used, (zcolor) { 120, 120, 120, 255 }, child->zindex);
+    //     } else if(i == selected_index) {
+    //         _push_rect_cmd(child->used, (zcolor) { 100, 100, 100, 255 }, child->zindex);
+    //     }
+    //     _ui_draw(_ui_get_child(child));
+    //     i++;
+    // }
 }
 
 // sets the text validator for text inputs
@@ -1452,7 +1474,7 @@ ZUI_PRIVATE i16 _zui_layout_size(zw_layout *data, bool axis, i16 bound) {
     used = (data->cont.children - 1) * spacing.e[axis];
     if(data->count == Z_AUTO_ALL) {
         FOR_CHILDREN(data)
-            used += _ui_sz(child, axis, data->sizes[i++]);
+            used += _ui_sz(child, axis, Z_AUTO);
         return used;
     }
     FOR_CHILDREN(data) {

@@ -310,6 +310,7 @@ i64 zui_ts() {
 
 // Returns the width and height of text given the font id [S]
 i32 zui_text_width(u16 font_id, char *text, i32 len) {
+    if(len == -1) len = 0x7FFFFFFF;
     u32 codepoint, v;
     i32 ret = 0;
     i64 tmp = zui_ts();
@@ -421,7 +422,7 @@ void *_ui_alloc(i32 id, i32 size) {
     widget->id = id;
     widget->bytes = size;
     widget->flags = ctx->flags;
-    ctx->flags &= ~(ZF_FILL_X | ZF_FILL_Y | ZF_POPUP);
+    ctx->flags &= ~(ZF_FILL_X | ZF_FILL_Y | ZF_POPUP | ZF_END_PARENT);
     return widget;
 }
 // An extention to _ui_alloc for containers, setting the ZF_CONTAINER flag
@@ -430,7 +431,7 @@ void *_ui_alloc(i32 id, i32 size) {
 // The widgets' byte count is adjusted to consider the style edits
 void *_cont_alloc(i32 id, i32 size) {
     i32 len = (i32)sizeof(zstyle) * ctx->style_edits;
-    zstyle *edits =    zbuf_pop(&ctx->cont_stack, len);
+    zstyle *edits = zbuf_pop(&ctx->cont_stack, len);
     zw_cont *cont = _ui_alloc(id, size);
     zstyle *new_edits = zbuf_alloc(&ctx->ui, len);
     memcpy(new_edits, edits, len);
@@ -468,6 +469,7 @@ void _push_clip_cmd(zrect rect, i32 zindex) {
     r->rect = rect;
 }
 void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex) {
+    if(len == -1) len = strlen(text);
     zcmd_text *r = &_draw_alloc(ZCMD_DRAW_TEXT, sizeof(zcmd_text) + len, zindex)->text;
     r->font_id = font_id;
     r->pos = coord;
@@ -547,7 +549,7 @@ zw_base *_ui_find_with_flag(zw_base *start, u32 flags) {
     return 0;
 }
 zw_base *_ui_get_child(zw_base *ui) {
-    if (~ui->flags & ZF_PARENT) return 0;
+    if ((~ui->flags & ZF_CONTAINER) || ((zw_cont*)ui)->children <= 0) return 0;
     return (zw_base*)((u8*)ui + ((ui->bytes + ctx->ui.alignsub1) & ~ctx->ui.alignsub1));
 }
 bool _ui_pressed(i32 buttons) {
@@ -574,7 +576,10 @@ bool _ui_released(i32 buttons) {
 void _ui_print(zw_base *cmd, int indent) {
     zrect b = cmd->bounds, u = cmd->used;
     char *name = ((zui_type*)ctx->registry.data)[cmd->id].name;
-    zui_log("%04x | %-*s[%s] (next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", _ui_index(cmd), indent, "", name, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
+    if(cmd->flags & ZF_CONTAINER)
+        zui_log("%04x | %-*s[%s] (next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d}, children: %d)\n", _ui_index(cmd), indent, "", name, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h, ((zw_cont*)cmd)->children);
+    else
+        zui_log("%04x | %-*s[%s] (next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d})\n", _ui_index(cmd), indent, "", name, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h);
     FOR_CHILDREN(cmd)
         _ui_print(child, indent + 2);
 }
@@ -651,7 +656,7 @@ void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
     ui->bounds.y = pos.y;
     ui->zindex = zindex;
     _rect_justify(&ui->used, ui->bounds, ui->flags);
-    if ((ui->flags & ZF_DISABLED) && (ui->flags & ZF_PARENT))
+    if ((ui->flags & ZF_DISABLED) && (ui->flags & ZF_CONTAINER))
         FOR_CHILDREN(ui) child->flags |= ZF_DISABLED; // all children of a disabled element must also be disabled
     if((~ui->flags & ZF_DISABLED) && _vec_within(ctx->mouse_pos, ui->used)) {
         if (zindex >= _ui_widget(ctx->hovered)->zindex)
@@ -762,18 +767,26 @@ ZUI_PRIVATE i32 _zui_partition(u64 *values, i32 len) {
     }
     return j;
 }
+ZUI_PRIVATE void PAUSE() {
 
+}
 // ends any container (window / grid)
 void zui_end() {
+    if(ctx->cont_stack.used <= 0) {
+        zui_log("Too many zui_end calls. Broken tree\n");
+        return;
+    }
     i32 container = *(i32*)zbuf_pop(&ctx->cont_stack, sizeof(i32) + sizeof(zstyle) * ctx->style_edits);
+    zw_base *latest = _ui_widget(ctx->latest);
+    zw_cont *cont = (zw_cont*)_ui_widget(container);
     // if active container isn't the most recent element set parent flag (it has children)
-    zw_base* latest = _ui_widget(ctx->latest);
     if (container != ctx->latest) {
         latest->flags |= ZF_LAST_CHILD;
-        _ui_widget(container)->flags |= ZF_PARENT;
         latest->next = ctx->ui.used;
         ctx->latest = container;
     }
+    if(cont->flags & ZF_END_PARENT)
+        zui_end();
 }
 
 void zui_style(u32 widget_id, ...) {
@@ -1143,115 +1156,127 @@ ZUI_PRIVATE void _zui_check_draw(zw_check *data) {
 void zui_sliderf(char *tooltip, f32 min, f32 max, f32 *value);
 void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
 
-i32 strcom(char *str) {
-    i32 i = 0;
-    while(str[i] != ',' && str[i]) i++;
-    return i;
-}
-// char *_zui_combo_opt(char *start, i32 n, i32 *len) {
-//     char *i, *s = start;
-//     do {
-//         *len = (i = strchr(s, ',')) ? i - s : strlen(s);
-//         if(!--n) return s;
-//     } while(i && (s = i + 1));
-//     return 0;
-// }
-
 // create a combo box with comma-seperated options
-i32 zui_combo(char *tooltip, char *csoptions, zd_combo *state) {
-    zw_combo *c = _cont_alloc(ZW_COMBO, sizeof(zw_combo));
-    c->tooltip = tooltip;
-    c->csoptions = csoptions;
-    c->state = state;
-    zui_style(ZW_ROW, ZSV_SPACING, (zvec2) { 0, 0 }, 0);
-    state->dropdown ^= zui_button(&state->toggle); {
-        zui_row(3, Z_AUTO, Z_FILL, Z_AUTO);
-        if(!state->index)
-            zui_label(tooltip);
-        else {
-            char *s = csoptions;
-            for(i32 i = 1; i < state->index; i++)
-                s += strcom(s) + 1;
-            zui_label_n(s, strcom(s));
-        }
-        zui_blank();
-        zui_labelf(state->dropdown ? "\xE2\x96\xBC" : "\xE2\x97\x84");
-        zui_end();
-    } zui_end();
-    if(state->dropdown) {
-        ctx->flags |= ZF_POPUP;
-        zui_style(ZW_COL, ZSV_SPACING, (zvec2) { 0, 0 }, 0);
-        zui_col(Z_AUTO_ALL);
-        i32 n = 1, len;
-        char *s = csoptions;
-        do {
-            if(zui_radio_btn(&state->index, n++))
-                state->dropdown = false;
-            zui_label_n(s, len = strcom(s));
-            zui_end();
-        } while(s += len + 1, s[-1]);
-        zui_end();
+ZUI_PRIVATE char* _combo_disp_label(zw_combo *data, i32 *len) {
+    zw_base *box = _ui_get_child(&data->widget);
+    if(data->state->index == 0) {
+        *len = strlen(data->tooltip);
+        return data->tooltip;
     }
-    zui_end();
+    i32 i = 1;
+    FOR_CHILDREN(box) {
+        zw_label *label = (zw_label*)child;
+        if(i++ != data->state->index) continue;
+        *len = label->len;
+        return label->text;
+    }
     return 0;
 }
-ZUI_PRIVATE i16 _zui_combo_size(zw_combo *data, bool axis, i16 bound) {
-    zw_base *child = _ui_get_child(&data->widget);
-    i16 sz = _ui_sz(child, axis, axis ? Z_AUTO : bound);
-    if(bound == Z_AUTO) {
-        i16 col_sz = _ui_sz(_ui_next(child), axis, Z_AUTO);
-        return axis ? sz : max(col_sz, sz);
+
+i32 zui_combo(char *tooltip, zd_combo *state, combo_display_fn *display_fn) { 
+    zw_combo *c = _cont_alloc(ZW_COMBO, sizeof(zw_combo));
+    c->tooltip = tooltip;
+    c->state = state;
+    c->fn = _combo_disp_label;
+    ctx->flags |= ZF_POPUP | ZF_END_PARENT;
+    _cont_alloc(ZW_COMBO_DROPDOWN, sizeof(zw_box));
+    return c->state->index - 1;
+}
+i32 zui_combo_txt(char *tooltip, char *csoptions, zd_combo *state) {
+    zui_combo(tooltip, state, _combo_disp_label);
+    char *i, *s = csoptions;
+    do {
+        i32 len = (i = strchr(s, ',')) ? i - s : strlen(s);
+        zui_label_n(s, len);
+    } while(i && (s = i + 1));
+    zui_end();
+    return state->index - 1;
+}
+ZUI_PRIVATE i16 _zui_combo_dd_size(zw_box *data, bool axis, i16 bound) {
+    zvec2 padding = zui_stylev(ZW_COMBO_DROPDOWN, ZSV_PADDING);
+    i16 pad = padding.e[axis] * 2;
+    i16 size = 0;
+    FOR_CHILDREN(data) {
+        i16 child_bound = bound == Z_AUTO ? Z_AUTO : bound - pad;
+        i16 csz = _ui_sz(child, axis, child_bound) + pad;
+        if(!axis) size = max(size, csz);
+        else size += csz;
     }
-    _ui_sz(_ui_next(child), axis, axis ? Z_AUTO : bound);
-    return axis ? sz : bound;
+    return size;
+}
+ZUI_PRIVATE void _zui_combo_dd_pos(zw_box *data, zvec2 pos, i32 zindex) {
+    zvec2 padding = zui_stylev(ZW_COMBO_DROPDOWN, ZSV_PADDING);
+    pos.x += padding.x;
+    FOR_CHILDREN(data) {
+        pos.y += padding.y;
+        _ui_pos(child, pos, zindex);    
+        pos.y += child->bounds.h + padding.y;
+    }
+}
+ZUI_PRIVATE void _zui_combo_dd_draw(zw_box *data, zvec2 pos, i32 zindex) {
+    // This is safe because data is the first child of the combobox
+    // and sizeof(zw_combo) % 8 == 0
+    zw_combo *parent = (void*)((char*)data - sizeof(zw_combo));
+    zvec2 padding = zui_stylev(ZW_COMBO_DROPDOWN, ZSV_PADDING);
+    zcolor background_c = { 80, 80, 80, 255 };
+    zcolor hovered_c = { 120, 120, 120, 255 };
+    zcolor selected_c = { 100, 100, 100, 255 };
+    i32 i = 1;
+    _push_rect_cmd(data->cont.bounds, background_c, zindex);
+    bool hovered = _ui_cont_hovered(&data->widget);
+    FOR_CHILDREN(data) {
+        zrect r = _rect_pad(child->bounds, padding);
+        if(_vec_within(_ui_mpos(), r)) {
+            if(_ui_clicked(ZM_LEFT_CLICK)) {
+                parent->state->index = i;
+                parent->state->dropdown = false;
+            }
+            _push_rect_cmd(r, hovered_c, zindex);
+        } else if(parent->state->index == i) {
+            _push_rect_cmd(r, selected_c, zindex);
+        }
+        i++;
+        _ui_draw(child);
+    }
+}
+ZUI_PRIVATE i16 _zui_combo_size(zw_combo *data, bool axis, i16 bound) {
+    zw_base *child = _ui_get_child(&data->widget); 
+    zvec2 padding = zui_stylev(ZW_COMBO, ZSV_PADDING);
+    char *arrow = data->state->dropdown ? "\xE2\x96\xBC" : "\xE2\x97\x84"; 
+    i16 sz = padding.e[axis] * 2;
+    if(axis) {
+        sz += zui_text_height(ctx->font_id);
+    } else {
+        i32 len;
+        char *s = data->fn(data, &len);
+        sz += zui_text_width(ctx->font_id, s, len);
+        sz += zui_text_width(ctx->font_id, arrow, 3);
+    }
+    i16 csz = _ui_sz(child, axis, axis ? Z_AUTO : bound);
+    return axis ? sz : max(sz, csz);
 }
 ZUI_PRIVATE void _zui_combo_pos(zw_combo *data, zvec2 pos, i32 zindex) {
-    zw_base *child = _ui_get_child(&data->widget);
-    _ui_pos(child, pos, zindex);
     pos.y += data->widget.used.h;
-    _ui_pos(_ui_next(child), pos, zindex);
+    _ui_pos(_ui_get_child(&data->widget), pos, zindex);
 }
 ZUI_PRIVATE void _zui_combo_draw(zw_combo *box) {
-    // zcolor foreground = (zcolor) { 70, 70, 70, 255 };
-    // zcolor text_color = (zcolor) { 230, 230, 230, 255 };
-    // char *txt[] = {
-    //     box->tooltip,"1","2","3"
-    // };
-    // 
-    // _push_rect_cmd(box->widget.used, foreground, box->widget.zindex);
-    // _push_text_cmd(ctx->font_id, _vec_add(box->widget.used.pos, (zvec2) { 5, 5 }), text_color, txt[*box->state], 1, box->widget.zindex);
+    zcolor background = (zcolor) { 70, 70, 70, 255 };
+    zcolor text_color = (zcolor) { 230, 230, 230, 255 };
+    zvec2 padding = zui_stylev(ZW_COMBO, ZSV_PADDING);
+    if(_ui_hovered(&box->widget) && _ui_clicked(ZM_LEFT_CLICK))
+        box->state->dropdown ^= 1;
+    zvec2 pos = _vec_add(box->widget.used.pos, padding);
+    char *arrow = box->state->dropdown ? "\xE2\x96\xBC" : "\xE2\x97\x84"; 
+    i16 arrow_width = zui_text_width(ctx->font_id, arrow, 3);
+    _push_rect_cmd(box->widget.used, background, box->widget.zindex);
+    i32 len;
+    char *display = box->fn(box, &len);
+    _push_text_cmd(ctx->font_id, pos, text_color, display, len, box->widget.zindex);
+    pos.x = box->widget.used.x + box->widget.used.w - padding.x - arrow_width;
+    _push_text_cmd(ctx->font_id, pos, text_color, arrow, 3, box->widget.zindex);
+    if(!box->state->dropdown) return;
     FOR_CHILDREN(box)
         _ui_draw(child);
-    // bool is_focused = &box->widget == _ui_widget(ctx->focused);
-    // i32 selected_index = (*box->state >> 1) - 1;
-    // _push_rect_cmd(box->widget.used, (zcolor) { 70, 70, 70, 255 }, box->widget.zindex);
-    //
-    // i32 len;
-    // char *text = _zui_combo_get_option(box, selected_index, &len);
-    // zvec2 pos = { box->widget.used.x + ctx->padding.x, box->widget.used.y + ctx->padding.y };
-    // _push_text_cmd(ctx->font_id, pos, (zcolor) { 230, 230, 230, 255 }, text, len, box->widget.zindex);
-    //
-    // // this detects whether our current widget (not any children) are focused
-    // if(&box->widget == _ui_widget(ctx->focused) && _ui_clicked(ZM_LEFT_CLICK)) {
-    //     *box->state ^= 1;
-    //     return;
-    // }
-    // if(~*box->state & 1) return;
-    // zw_base *background = _ui_get_child(&box->widget);
-    // _push_clip_cmd(background->used, background->zindex);
-    // _push_rect_cmd(background->used, (zcolor) { 80, 80, 80, 255 }, background->zindex);
-    // i32 i = 0;
-    // FOR_CHILDREN(box) {
-    //     if(_ui_cont_focused(child) && _ui_clicked(ZM_LEFT_CLICK)) {
-    //         *box->state = ((i + 1) << 1); // close popup and set selected
-    //     } else if(_ui_cont_hovered(child)) {
-    //         _push_rect_cmd(child->used, (zcolor) { 120, 120, 120, 255 }, child->zindex);
-    //     } else if(i == selected_index) {
-    //         _push_rect_cmd(child->used, (zcolor) { 100, 100, 100, 255 }, child->zindex);
-    //     }
-    //     _ui_draw(_ui_get_child(child));
-    //     i++;
-    // }
 }
 
 // sets the text validator for text inputs
@@ -1804,6 +1829,10 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
     zui_register(ZW_CHECK, "check", _zui_check_size, 0, _zui_check_draw);
     zui_register(ZW_TEXT, "text", _zui_text_size, 0, _zui_text_draw);
     zui_register(ZW_COMBO, "combo", _zui_combo_size, _zui_combo_pos, _zui_combo_draw);
+    zui_default_style(ZW_COMBO, ZSV_PADDING, (zvec2) { 10, 10 }, ZS_DONE);
+    zui_register(ZW_COMBO_DROPDOWN, "combo dropdown", _zui_combo_dd_size, _zui_combo_dd_pos, _zui_combo_dd_draw);
+    zui_default_style(ZW_COMBO_DROPDOWN, ZSV_PADDING, (zvec2) { 10, 10 }, ZS_DONE);
+
     zui_register(ZW_GRID, "grid", _zui_grid_size, _zui_grid_pos, _zui_grid_draw);
     zui_default_style(ZW_GRID,
         ZSC_BACKGROUND, (zcolor) { 30, 30, 30, 255 },

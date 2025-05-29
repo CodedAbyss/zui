@@ -146,7 +146,7 @@ void _win32_tick(zui_gdi_args *args, bool blocking) {
     if(!app_ctx.running) return;
     MSG msg;
     static u32 needs_refresh = 0;
-    if (needs_refresh == 0) {
+    if (needs_refresh == 0 || !blocking) {
         if (GetMessageW(&msg, NULL, 0, 0) <= 0)
             app_ctx.running = false;
         else {
@@ -162,8 +162,9 @@ void _win32_tick(zui_gdi_args *args, bool blocking) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
         needs_refresh = 1;
-    }    
-    args->frame(0);
+    }
+    if(needs_refresh)
+        args->frame(0);
 }
 void _win32_close(zui_gdi_args *args) {
     args->close(0);
@@ -230,7 +231,9 @@ void _win32_setup(zui_gdi_args *args) {
 void gdi_renderer(zcmd_any *cmd, void *user_data) {
     switch(cmd->base.id) {
         case ZCMD_INIT: _win32_setup((zui_gdi_args*)user_data); break;
-        case ZCMD_TICK: _win32_tick((zui_gdi_args*)user_data, true); break;
+        case ZCMD_TICK: _win32_tick((zui_gdi_args*)user_data, false); break;
+        case ZCMD_TICK_BLOCKING: _win32_tick((zui_gdi_args*)user_data, true); break;
+        case ZCMD_REDRAW: RedrawWindow(app_ctx.wnd, 0, 0, RDW_INVALIDATE); break;
         case ZCMD_TIMESTAMP: {
             LARGE_INTEGER ts;
             QueryPerformanceCounter(&ts);

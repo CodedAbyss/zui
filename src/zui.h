@@ -110,6 +110,8 @@ enum ZUI_FLAGS {
 enum ZUI_CMDS {
     ZCMD_INIT,
     ZCMD_TICK,
+    ZCMD_TICK_BLOCKING,
+    ZCMD_REDRAW,
         // _ZCMD_INIT,     // new client
     ZCMD_CLOSE,
         // _ZCMD_CLOSE,    // client disconnects
@@ -214,16 +216,15 @@ typedef struct zd_combo { u8 index; u8 toggle; u8 dropdown; u8 _; } zd_combo;
 
 typedef struct zw_box    { Z_CONT; } zw_box;
 typedef struct zw_layout { Z_CONT; i32 count; i16 sizes[0]; } zw_layout;
-typedef struct zw_selector { Z_CONT; i32 *state; i32 count; i16 sizes[0]; } zw_selector;
-typedef struct zw_grid   { Z_CONT; u8 rows, cols, padx, pady; float data[1]; } zw_grid;
+typedef struct zw_grid   { Z_CONT; i16 rows, cols, data[0]; } zw_grid;
 typedef struct zw_tabset { Z_CONT; char *cstabs; i32 *state; u16 label_cnt; u16 tabheight; } zw_tabset;
 typedef struct zw_text   { Z_WIDGET; char *buffer; i32 len; zd_text *state; } zw_text;
 typedef struct zw_btn    { Z_CONT; u8 *state, id; } zw_btn;
 typedef struct zw_check  { Z_WIDGET; u8 *state; } zw_check;
 
 struct zw_combo;
-typedef char *combo_display_fn(struct zw_combo *data, i32 *len);
-typedef struct zw_combo  { Z_CONT; zd_combo *state; char *tooltip; combo_display_fn *fn; } zw_combo;
+typedef char *extract_txt_fn(zw_base *data, i32 *len);
+typedef struct zw_combo  { Z_CONT; zd_combo *state; char *tooltip; extract_txt_fn *fn; } zw_combo;
 
 typedef struct zw_label  { Z_WIDGET; char *text; i32 len; } zw_label;
 typedef struct zw_labelf { Z_WIDGET; char text[0]; } zw_labelf;
@@ -318,8 +319,13 @@ ZUI_API bool zmap_get(zmap *map, u32 key, u32 *value);
 
 ZUI_API void zui_log(char *fmt, ...);
 
-// this sends a ZCMD_TICK command to the renderer function
+// Used when manually ticking to pump window events.
+// If blocking, waits for the next window event.
+// If non-blocking, immediately returns if no events scheduled.
 ZUI_API void zui_tick(bool blocking);
+
+// used alongside manual ticking to get a specific fps, or draw as needed.
+ZUI_API void zui_redraw();
 
 ZUI_API void zui_mouse_down(u16 btn);
 ZUI_API void zui_mouse_up(u16 btn);
@@ -334,7 +340,7 @@ ZUI_API void zui_fill(u32 axis);
 ZUI_API void zui_init(zui_render_fn renderer, zui_log_fn logger, void *user_data);
 ZUI_API void zui_push(zccmd *cmd);
 ZUI_API void zui_render();
-ZUI_API u32 zui_ms();
+ZUI_API i64 zui_ts();
 
 ZUI_API void zui_print_tree();
 
@@ -364,8 +370,8 @@ ZUI_API void zui_label(const char *text);
 ZUI_API void zui_labelf(const char *fmt, ...);
 ZUI_API void zui_sliderf(char *tooltip, f32 min, f32 max, f32 *value);
 ZUI_API void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
-ZUI_API char *_combo_disp_label(zw_combo *data, i32 *len);
-ZUI_API i32  zui_combo(char *tooltip, zd_combo *state, combo_display_fn *display_fn);
+ZUI_API char *_extract_label_txt(zw_base *data, i32 *len);
+ZUI_API i32  zui_combo(char *tooltip, zd_combo *state, extract_txt_fn *display_fn);
 ZUI_API i32  zui_combo_txt(char *tooltip, char *csoptions, zd_combo *state);
 ZUI_API bool zui_radio_btn(u8 *state, u8 id);
 ZUI_API bool zui_button(u8 *state);
@@ -377,7 +383,7 @@ ZUI_API void zui_text(char *buffer, i32 len, zd_text *state);
 ZUI_API void zui_textbox(char *buffer, i32 len, i32 *state);
 ZUI_API void zui_col(i32 n, ...);
 ZUI_API void zui_row(i32 n, ...);
-ZUI_API void zui_grid(i32 cols, i32 rows, float *col_row_settings);
+ZUI_API void zui_grid(i32 cols, i32 rows, ...);
 ZUI_API void zui_tabset(char *cstabs, i32 *state);
 
 #ifdef __cplusplus 

@@ -7,7 +7,8 @@
 typedef struct zd_node {
     zrect rect;
     void *uud;
-    i32 flags;
+    i16 uud_type;
+    i16 flags;
     i16 inputs, outputs;
     struct zd_node *next;
 } zd_node;
@@ -43,9 +44,9 @@ extern i32 ZSC_NODE_FINPUT;
 
 i32 znode_del_links(zd_node_editor *state, zd_node *node, i32 flags);
 i32 znode_cnt_links(zd_node_editor *state, zd_node *node, i32 flags);
-zd_node *znode_get(zd_node_editor *state, void *uud);
-zd_node *znode_add(zd_node_editor *state, void *uud, zvec2 pos, i32 inputs, i32 outputs, i32 flags);
-bool znode_del(zd_node_editor *state, void *uud);
+zd_node *znode_get(zd_node_editor *state, void *uud, i32 uud_type);
+zd_node *znode_add(zd_node_editor *state, void *uud, i32 uud_type, zvec2 pos, i32 inputs, i32 outputs, i32 flags);
+bool znode_del(zd_node_editor *state, void *uud, i32 uud_type);
 
 bool znode_has_link(zd_node_editor *state, zd_node *input, zd_node *output);
 bool znode_link(zd_node_editor *state, zd_node *input, i32 in_index, zd_node *output, i32 out_index);

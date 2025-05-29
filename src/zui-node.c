@@ -15,18 +15,19 @@ i32 ZSC_NODE_FOUTPUT;
 i32 ZSC_NODE_INPUT;
 i32 ZSC_NODE_FINPUT;
 
-zd_node *znode_get(zd_node_editor *state, void *uud) {
+zd_node *znode_get(zd_node_editor *state, void *uud, i32 uud_type) {
     FOR_NODES(state)
-        if(node->uud == uud)
+        if(node->uud == uud && node->uud_type == uud_type)
            return node;
     return 0;
 }
 
-zd_node *znode_add(zd_node_editor *state, void *uud, zvec2 pos, i32 inputs, i32 outputs, i32 flags) {
+zd_node *znode_add(zd_node_editor *state, void *uud, i32 uud_type, zvec2 pos, i32 inputs, i32 outputs, i32 flags) {
     zd_node *new = malloc(sizeof(zd_node));
     *new = (zd_node) {
         .rect.pos = pos,
         .uud = uud,
+        .uud_type = uud_type,
         .flags = flags,
         .inputs = inputs,
         .outputs = outputs,
@@ -50,9 +51,9 @@ i32 znode_del_links(zd_node_editor *state, zd_node *node, i32 index) {
     return cnt;
 }
 
-bool znode_del(zd_node_editor *state, void *uud) { 
+bool znode_del(zd_node_editor *state, void *uud, i32 uud_type) { 
     for(zd_node **p = &state->head_node, *n = *p; n; p = &n->next, n = *p) {
-        if(n->uud != uud) continue;
+        if(n->uud != uud || n->uud_type != uud_type) continue;
         *p = n->next;
         znode_del_links(state, n, 0);
         free(n);

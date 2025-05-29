@@ -422,7 +422,7 @@ void *_ui_alloc(i32 id, i32 size) {
     widget->id = id;
     widget->bytes = size;
     widget->flags = ctx->flags;
-    ctx->flags &= ~(ZF_FILL_X | ZF_FILL_Y | ZF_POPUP | ZF_END_PARENT);
+    ctx->flags &= ZF_PERSIST;
     return widget;
 }
 // An extention to _ui_alloc for containers, setting the ZF_CONTAINER flag
@@ -536,15 +536,17 @@ void _ui_schedule_focus(zw_base *widget) {
 }
 zw_base *_ui_find_with_flag(zw_base *start, u32 flags) {
     i32 si = _ui_index(start);
-    for(i32 index = si + start->bytes; index < ctx->ui.used; index += _ui_widget(index)->bytes) {
+    for(i32 index = si + start->bytes; index < ctx->ui.used;) {
         zw_base *w = _ui_widget(index);
         if (w->flags & flags)
             return w;
+        index += zbuf_align(&ctx->ui, _ui_widget(index)->bytes);
     }
-    for (i32 index = 0; index < si; index += _ui_widget(index)->bytes) {
+    for (i32 index = 0; index < si;) {
         zw_base *w = _ui_widget(index);
         if (w->flags & flags)
             return w;
+        index += zbuf_align(&ctx->ui, _ui_widget(index)->bytes);
     }
     return 0;
 }
@@ -559,24 +561,16 @@ zw_base *_ui_nth_child(zw_base *ui, i32 n) {
     return c;
 }
 bool _ui_pressed(i32 buttons) {
-    if(ctx->mouse_state & buttons)
-        return true;
-    return false;
+    return !!(ctx->mouse_state & buttons);
 }
 bool _ui_dragged(i32 buttons) {
-    if(ctx->mouse_state & ctx->prev_mouse_state & buttons)
-        return true;
-    return false;
+    return !!(ctx->mouse_state & ctx->prev_mouse_state & buttons);
 }
 bool _ui_clicked(i32 buttons) {
-    if(ctx->mouse_state & (ctx->mouse_state ^ ctx->prev_mouse_state) & buttons)
-        return true;
-    return false;
+    return !!(ctx->mouse_state & (ctx->mouse_state ^ ctx->prev_mouse_state) & buttons);
 }
 bool _ui_released(i32 buttons) {
-    if(~ctx->mouse_state & (ctx->mouse_state ^ ctx->prev_mouse_state) & buttons)
-        return true;
-    return false;
+    return !!(~ctx->mouse_state & (ctx->mouse_state ^ ctx->prev_mouse_state) & buttons);
 }
 
 void _ui_print(zw_base *cmd, int indent) {
@@ -590,13 +584,8 @@ void _ui_print(zw_base *cmd, int indent) {
         _ui_print(child, indent + 2);
 }
 
-zvec2 _ui_mpos() {
-    return ctx->mouse_pos;
-}
-
-zvec2 _ui_mdelta() {
-    return _vec_sub(ctx->mouse_pos, ctx->prev_mouse_pos);
-}
+zvec2 _ui_mpos() { return ctx->mouse_pos; }
+zvec2 _ui_mdelta() { return _vec_sub(ctx->mouse_pos, ctx->prev_mouse_pos); }
 
 bool _ui_is_child(zw_base *container, zw_base *other) {
     return container <= other && other < _ui_widget(container->next);
@@ -717,6 +706,10 @@ void zui_register(i32 widget_id, char *widget_name, void *size_cb, void *pos_cb,
 
 void zui_justify(u32 justification) {
     ctx->flags = justification & 15;
+}
+
+void zui_disable() {
+    ctx->flags |= ZF_DISABLED;
 }
 
 void zui_fill(u32 axis) {
@@ -1163,7 +1156,7 @@ void zui_sliderf(char *tooltip, f32 min, f32 max, f32 *value);
 void zui_slideri(char *tooltip, i32 min, i32 max, i32 *value);
 
 // create a combo box with comma-seperated options
-ZUI_PRIVATE char* _extract_label_txt(zw_base *data, i32 *len) {
+char* _extract_label_txt(zw_base *data, i32 *len) {
     switch(data->id) {
         case ZW_LABEL: {
             zw_label *label = (zw_label*)data;
@@ -1278,7 +1271,8 @@ ZUI_PRIVATE void _zui_combo_draw(zw_combo *box) {
     if(!_ui_cont_focused(&box->widget))
         box->state->dropdown = false;
     zvec2 pos = _vec_add(box->widget.used.pos, padding);
-    char *arrow = box->state->dropdown ? "\xE2\x96\xBC" : "\xE2\x97\x84"; 
+    //char *arrow = box->state->dropdown ? "\xE2\x96\xBC" : "\xE2\x97\x84"; 
+    char *arrow = "\xE2\x96\xBC";
     i16 arrow_width = zui_text_width(ctx->font_id, arrow, 3);
     _push_rect_cmd(box->widget.used, background, box->widget.zindex);
     zw_base *dropdown = _ui_get_child(&box->widget);
@@ -1330,6 +1324,7 @@ ZUI_PRIVATE i32 _zui_text_get_index(zw_text *data, i32 len) {
 ZUI_PRIVATE void _zui_text_draw(zw_text *data) {
     zd_text tctx = *(zd_text*)data->state;
     i32 len = (i32)strlen(data->buffer);
+    zcolor background = zui_stylec(ZW_TEXT, ZSC_BACKGROUND);
     if(&data->widget == _ui_widget(ctx->focused)) {
         i32 start = 0;
         // when there is a selection, the first input often has special behavior as the selection is removed
@@ -1452,7 +1447,7 @@ ZUI_PRIVATE void _zui_text_draw(zw_text *data) {
     zrect cursor = { textpos.x + sz.x, textpos.y, 1, sz.y };
 
     // generate draw calls
-    _push_rect_cmd(data->widget.used, (zcolor) { 30, 30, 30, 255 }, data->widget.zindex);
+    _push_rect_cmd(data->widget.used, background, data->widget.zindex);
 
     zvec2 selection = zui_text_vec(ctx->font_id, data->buffer + tctx.index, tctx.selection);
     zrect r = { textpos.x + sz.x, textpos.y, selection.x, selection.y };
@@ -1546,9 +1541,9 @@ ZUI_PRIVATE void _zui_layout_pos(zw_layout *data, zvec2 pos, i32 zindex) {
     }
 }
 
-ZUI_PRIVATE bool _zui_grid_propogate_auto_all(i16 *data, i32 len, va_list args) {
+ZUI_PRIVATE bool _zui_grid_propogate_auto_all(i16 *data, i32 len, va_list *args) {
     for(i32 i = 0; i < len; i++) {
-        data[i] = (i16)va_arg(args, i32);
+        data[i] = (i16)va_arg(*args, i32);
         if(data[i] != Z_AUTO_ALL) continue;
         if(i != 0) {
             zui_log("Z_AUTO_ALL can only be at the start of the respective size list\n");
@@ -1567,8 +1562,8 @@ void zui_grid(i32 cols, i32 rows, ...) {
     zw_grid *l = _cont_alloc(ZW_GRID, bytes);
     l->cols = cols;
     l->rows = rows;
-    _zui_grid_propogate_auto_all(l->data, cols, args);
-    _zui_grid_propogate_auto_all(l->data + cols, rows, args);
+    _zui_grid_propogate_auto_all(l->data, cols, &args);
+    _zui_grid_propogate_auto_all(l->data + cols, rows, &args);
     va_end(args);
 
 }
@@ -1661,7 +1656,7 @@ void zui_tabset(char *cstabs, i32 *state) {
 ZUI_PRIVATE i16 _zui_tabset_size(zw_tabset *tabs, bool axis, i16 bound) {
     zvec2 padding = zui_stylev(ZW_TABSET, ZSV_PADDING);
     //zvec2 tab_size = { padding.x * 2 * tabs->label_cnt, 0 };
-    u16 tab_size = axis ? 0 : padding.x * 2 * tabs->label_cnt;
+    i16 tab_size = axis ? 0 : padding.x * 2 * tabs->label_cnt;
     zw_base *label = _ui_get_child(&tabs->widget);
     for (i32 i = 0; i < tabs->label_cnt; i++) {
         u16 sz = _ui_sz(label, axis, Z_AUTO);
@@ -1672,7 +1667,7 @@ ZUI_PRIVATE i16 _zui_tabset_size(zw_tabset *tabs, bool axis, i16 bound) {
         tabs->tabheight = tab_size + padding.y * 2;
         if (bound != Z_AUTO) bound -= tabs->tabheight;
     }
-    u16 child_sz = 0;
+    i16 child_sz = 0;
     i32 i = 0;
     FOR_SIBLINGS(tabs, label) {
         if (i != *tabs->state) child->flags |= ZF_DISABLED; // widgets that aren't visible aren't capable of being focused / hovered
@@ -1680,8 +1675,8 @@ ZUI_PRIVATE i16 _zui_tabset_size(zw_tabset *tabs, bool axis, i16 bound) {
         i++;
     }
     if (axis) {
-        bound += tabs->tabheight;
         if (bound == Z_AUTO) bound = max(tab_size, child_sz);
+        bound += tabs->tabheight;
     }
     else if (bound == Z_AUTO) bound = tabs->tabheight + child_sz;
     return bound;
@@ -1706,6 +1701,9 @@ ZUI_PRIVATE void _zui_tabset_pos(zw_tabset *tabs, zvec2 pos) {
 ZUI_PRIVATE void _zui_tabset_draw(zw_tabset *tabs) {
     zrect bounds = tabs->widget.bounds;
     zvec2 padding = zui_stylev(ZW_TABSET, ZSV_PADDING);
+    zcolor unfocused = zui_stylec(ZW_TABSET, ZSC_UNFOCUSED);
+    zcolor background = zui_stylec(ZW_TABSET, ZSC_BACKGROUND);
+    zcolor hovered = zui_stylec(ZW_TABSET, ZSC_HOVERED);
     i32 zindex = tabs->widget.zindex;
     zw_base *label = _ui_get_child(&tabs->widget);
     FOR_N_SIBLINGS(tabs, label, tabs->label_cnt) {
@@ -1714,16 +1712,15 @@ ZUI_PRIVATE void _zui_tabset_draw(zw_tabset *tabs) {
             *tabs->state = i;
     }
     label = _ui_get_child(&tabs->widget);
-    _push_rect_cmd((zrect) { bounds.x, bounds.y, bounds.w, tabs->tabheight }, zui_stylec(ZW_TABSET, ZSC_UNFOCUSED), zindex);
+    _push_rect_cmd((zrect) { bounds.x, bounds.y, bounds.w, tabs->tabheight }, unfocused, zindex);
     FOR_N_SIBLINGS(tabs, label, tabs->label_cnt) {
         zrect tab_rect = _rect_pad(label->bounds, padding);
         if(i == *tabs->state)
-            _push_rect_cmd(tab_rect, zui_stylec(ZW_TABSET, ZSC_BACKGROUND), zindex);
+            _push_rect_cmd(tab_rect, background, zindex);
         else if(_vec_within(ctx->mouse_pos, tab_rect) && _ui_cont_hovered(&tabs->widget))
-            _push_rect_cmd(tab_rect, zui_stylec(ZW_TABSET, ZSC_HOVERED), zindex);
+            _push_rect_cmd(tab_rect, hovered, zindex);
         _ui_draw(label);
     }
-    //_push_clip_cmd((zrect) { bounds.x, bounds.y + tabs->tabheight, bounds.w, bounds.h - tabs->tabheight }, zindex);
     // skip to selected sibling
     FOR_N_SIBLINGS(tabs, label, *tabs->state);
     _ui_draw(label);
@@ -1786,6 +1783,8 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
 
     zui_register(ZW_CHECK, "check", _zui_check_size, 0, _zui_check_draw);
     zui_register(ZW_TEXT, "text", _zui_text_size, 0, _zui_text_draw);
+    zui_default_style(ZW_TEXT, ZSC_BACKGROUND, (zcolor) { 30, 30, 30, 255 }, ZS_DONE);
+
     zui_register(ZW_COMBO, "combo", _zui_combo_size, _zui_combo_pos, _zui_combo_draw);
     zui_default_style(ZW_COMBO, ZSV_PADDING, (zvec2) { 10, 5 }, ZS_DONE);
     zui_register(ZW_COMBO_DROPDOWN, "combo dropdown", _zui_combo_dd_size, _zui_combo_dd_pos, _zui_combo_dd_draw);

@@ -146,7 +146,7 @@ void _win32_tick(zui_gdi_args *args, bool blocking) {
     if(!app_ctx.running) return;
     MSG msg;
     static u32 needs_refresh = 0;
-    if (needs_refresh == 0 || !blocking) {
+    if (needs_refresh == 0 && blocking) {
         if (GetMessageW(&msg, NULL, 0, 0) <= 0)
             app_ctx.running = false;
         else {

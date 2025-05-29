@@ -96,6 +96,7 @@ enum ZUI_FLAGS {
     ZJ_RIGHT =  1 << 1,
     ZJ_UP =     1 << 2,
     ZJ_DOWN =   1 << 3,
+    ZF_PERSIST = (ZJ_LEFT | ZJ_RIGHT | ZJ_UP | ZJ_DOWN),
     ZF_CONTAINER = 1 << 4, // a container (saves style changes for itself and children)
     ZF_END_PARENT = 1 << 5,
     ZF_TABBABLE =  1 << 6, // pressing tab can focus to this element
@@ -334,8 +335,6 @@ ZUI_API void zui_key_mods(u16 mod);
 ZUI_API void zui_key_char(i32 c);
 ZUI_API void zui_resize(u16 width, u16 height);
 
-ZUI_API void zui_fill(u32 axis);
-
 // SERVER COMMANDS
 ZUI_API void zui_init(zui_render_fn renderer, zui_log_fn logger, void *user_data);
 ZUI_API void zui_push(zccmd *cmd);
@@ -349,6 +348,8 @@ ZUI_API void zui_blank();
 ZUI_API void zui_box();
 ZUI_API void zui_popup();
 ZUI_API void zui_justify(u32 justification);
+ZUI_API void zui_fill(u32 axis);
+ZUI_API void zui_disable();
 
 // sets the style for the next container
 ZUI_API void zui_style(u32 widget_id, ...);

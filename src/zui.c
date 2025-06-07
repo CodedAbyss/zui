@@ -1505,18 +1505,17 @@ ZUI_PRIVATE i16 _zui_grid_size(zw_grid *grid, bool axis, i16 bound) {
         if(cfg_sizes[i] == Z_FILL) fill++;
     }
     for(i32 i = 0; i < cnt; i++) {
-        if(cfg_sizes[i] != Z_FILL)
-            cfg_sizes[i] = real_sizes[i];
-        else
-            left -= cfg_sizes[i] = left / fill--;
+        if(cfg_sizes[i] != Z_FILL) continue;
+        left -= real_sizes[i] = left / fill--;
     }
     i = 0;
     FOR_CHILDREN(grid) { // size Z_FILL
         i16 n = axis ? i / grid->cols : i % grid->cols; i++;
         if(cfg_sizes[n] != Z_FILL) continue;
-        i16 csz = _ui_sz(child, axis, cfg_sizes[n]);
+        i16 csz = _ui_sz(child, axis, real_sizes[n]);
     }
-    return bound;
+    memcpy(cfg_sizes, real_sizes, cnt * sizeof(i16));
+    return bound - left;
 }
 ZUI_PRIVATE void _zui_grid_pos(zw_grid *grid, zvec2 pos, i32 zindex) {
     zvec2 spacing = zui_stylev(grid->cont.id, ZSV_SPACING);
@@ -1525,6 +1524,8 @@ ZUI_PRIVATE void _zui_grid_pos(zw_grid *grid, zvec2 pos, i32 zindex) {
     FOR_CHILDREN(grid) {
         i16 w = grid->data[i % grid->cols];
         i16 h = grid->data[grid->cols + i / grid->cols];
+        // i16 w = child->bounds.w;
+        // i16 h = child->bounds.h;
         if(i % grid->cols == 0) cpos.x = pos.x;
         _ui_pos(child, cpos, zindex);
         cpos.x += w + spacing.x;

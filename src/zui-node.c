@@ -29,82 +29,187 @@ zd_node *znode_add(zd_node_editor *state, void *uud, i32 uud_type, zvec2 pos, i3
         .uud = uud,
         .uud_type = uud_type,
         .flags = flags,
-        .inputs = inputs,
-        .outputs = outputs,
+        .cnt_in = inputs,
+        .cnt_out = outputs,
         .next = state->head_node,
     };
     state->node_cnt++;
+    state->has_updated = true;
     state->head_node = new;
     return new;
 }
 
-i32 znode_del_links(zd_node_editor *state, zd_node *node, i32 index) { 
-    i32 cnt = 0;
-    for(zd_node_link **p = &state->head_link, *l = *p; l; l = *p) {
-        if((l->A == node && (!index || (l->input == -index - 1))) ||
-           (l->B == node && (!index || (l->output == index - 1)))) {
-            *p = l->next;
-            free(l);
-            cnt++;
-        } else p = &l->next;
-    }
-    return cnt;
-}
+extern void print_link(zd_node_link *);
+extern void print_node(zd_node *);
 
-bool znode_del(zd_node_editor *state, void *uud, i32 uud_type) { 
-    for(zd_node **p = &state->head_node, *n = *p; n; p = &n->next, n = *p) {
-        if(n->uud != uud || n->uud_type != uud_type) continue;
-        *p = n->next;
-        znode_del_links(state, n, 0);
-        free(n);
-        state->node_cnt--;
-        return true;
-    }
-    return false;
-}
+enum {
+    NODE_MARKED = 4,
+    NODE_FULLMARKED = 8
+};
 
-bool znode_has_link(zd_node_editor *state, zd_node *input, zd_node *output) {
-    for(zd_node_link *l = state->head_link; l; l = l->next)
-        if(l->A == input && l->B == output)
-            return true;
-    return false;
-}
-
-bool znode_link(zd_node_editor *state, zd_node *input, i32 in_index, zd_node *output, i32 out_index) {
-    if(!input || !output
-        || in_index < 0 || in_index >= input->inputs
-        || out_index < 0 || out_index >= output->outputs) return false;
-    for(zd_node_link **p = &state->head_link, *l = *p; l; p = &l->next, l = *p) {
-        if((l->A == input) && (l->input == in_index)
-            && (input->flags & ZF_NODE_1IN)) return false;
-        if((l->B == output) && (l->output == out_index)
-            && (output->flags & ZF_NODE_1OUT)) return false;
-        if((l->A == input) && (l->B == output)
-            && (l->input == in_index) && (l->output == out_index)) return false;
-    }
-    zd_node_link *new = malloc(sizeof(zd_node_link));
-    *new = (zd_node_link) {
-        .A = input, .B = output,
-        .input = in_index, .output = out_index,
-        .next = state->head_link,
-    };
-    state->head_link = new;
+bool _znode_toposort_visit(zd_node *node, zd_node **arr, int *cnt) {
+    if(node->flags & 8) return true;
+    if(node->flags & 4) return false; // cycle detected
+    node->flags |= 4;
+    FOR_INPUTS(node)
+        if(!_znode_toposort_visit(link->output, arr, cnt))
+           return false;
+    node->flags |= 8;
+    arr[(*cnt)++] = node;
     return true;
 }
 
-bool znode_del_link(zd_node_editor *state, zd_node *input, zd_node *output) {
-    for(zd_node_link **p = &state->head_link, *l = *p; l; p = &l->next, l = *p) {
-        if(l->A != input || l->B != output) continue;
-        *p = l->next;
-        free(l);
-        return true;
+i32 znode_toposort(zd_node_editor *state, zd_node **arr) {
+    i32 cnt = 0;
+    FOR_NODES(state) {
+        if(node->flags & 8) continue;
+        if(!_znode_toposort_visit(node, arr, &cnt)) {
+            FOR_NODES(state)
+                node->flags &= ~12;
+           return 0;
+        }
     }
-    return false;
+    FOR_NODES(state)
+        node->flags &= ~12;
+    return cnt;
+}
+
+bool znode_link(zd_node_editor *state, zd_node *output, i32 id_out, zd_node *input, i32 id_in) {
+	for(zd_node_link *n = output->outputs; n; n = n->next_out) {
+		if(n->input == input && n->id_in == id_in && n->id_out == id_out)
+            return false;
+		if((output->flags & ZF_NODE_1OUT) && n->id_out == id_out)
+            return false;
+	}
+	if(input->flags & ZF_NODE_1IN)
+		for(zd_node_link *n = input->inputs; n; n = n->next_in)
+			if(n->id_in == id_in)
+                return false;
+	zd_node_link *link = malloc(sizeof(zd_node_link));
+	*link = (zd_node_link) {
+		.id_in = id_in,
+		.id_out = id_out,
+		.next = state->head_link,
+		.next_in = input->inputs,
+		.next_out = output->outputs,
+		.output = output,
+		.input = input
+	};
+	state->head_link = output->outputs = input->inputs = link;
+    state->link_cnt++;
+    state->has_updated = true;
+	return true;
+}
+
+#define FOR_DELINKS(head, var, next) \
+    for(typeof(**(head)) **_p = (head), *var = *_p, **_n; var && (_n = &var->next, 1); var = *_n)
+#define LINK_KEEP() (_p = _n)
+#define LINK_DEL() (*_p = *_n)
+
+bool znode_del(zd_node_editor *state, void *uud, i32 uud_type) {
+    FOR_DELINKS(&state->head_node, n, next) {
+		if(n->uud != uud || n->uud_type != uud_type) {
+            LINK_KEEP();
+            continue;
+        }
+        FOR_DELINKS(&state->head_link, link, next) {
+            if(link->input != n && link->output != n) {
+                LINK_KEEP();
+                continue;
+            }
+            LINK_DEL();
+            state->link_cnt--;
+            free(link);
+        }
+        LINK_DEL();
+        state->node_cnt--;
+        state->has_updated = true;
+		free(n);
+		return true;
+	}
+	return false;
+}
+
+void reportstuff(zd_node_editor *editor) {
+    zui_log("REPORT:\n");
+    FOR_NODES(editor) {
+        zui_log("node: ");
+        print_node(node);
+        zui_log("\n  inputs:\n");
+        FOR_INPUTS(node) {
+            zui_log("    ");
+            print_link(link);
+        }
+        zui_log("  outputs:\n");
+        FOR_OUTPUTS(node) {
+            zui_log("    ");
+            print_link(link);
+        }
+    }
+}
+
+bool znode_del_out_links(zd_node_editor *state, zd_node *node, i32 id_out) {
+	// loop through all input links with id_out
+    FOR_DELINKS(&node->outputs, output, next_out) {
+        if(output->id_out != id_out) {
+            LINK_KEEP(); 
+            continue;
+        }
+		// we've found a link to delete, delete it from the inputs first
+        FOR_DELINKS(&output->input->inputs, input, next_in) {
+            if(output == input) LINK_DEL();
+            else LINK_KEEP(); 
+        }
+        LINK_DEL();
+    }
+    FOR_DELINKS(&state->head_link, link, next) {
+		if(link->id_out != id_out || link->output != node) {
+            LINK_KEEP();
+            continue;
+        }
+        LINK_DEL();
+        state->link_cnt--;
+        state->has_updated = true;
+        free(link);
+    }
+	return true;
+}
+
+bool znode_del_in_links(zd_node_editor *state, zd_node *node, i32 id_in) {
+    FOR_DELINKS(&node->inputs, input, next_in) {
+        if(input->id_in != id_in) {
+            LINK_KEEP(); 
+            continue;
+        }
+		// we've found a link to delete, delete it from the inputs first
+        FOR_DELINKS(&input->output->outputs, output, next_out) {
+            if(input == output) LINK_DEL();
+            else LINK_KEEP(); 
+        }
+        LINK_DEL();
+    }
+    FOR_DELINKS(&state->head_link, link, next) {
+		if(link->id_in != id_in || link->input != node) {
+            LINK_KEEP();
+            continue;
+        }
+        LINK_DEL();
+        state->link_cnt--;
+        state->has_updated = true;
+        free(link);
+    }
+    return true;
 }
 
 void zui_node_editor(zd_node_editor *state) {
     zw_node_editor *editor = _cont_alloc(ZW_NODE_EDITOR, sizeof(zw_node_editor));
     editor->state = state;
+}
+
+bool znode_updated(zd_node_editor *state) {
+    bool ret = state->has_updated;
+    state->has_updated = false;
+    return ret;
 }
 
 static void _error_if_miscount(zw_node_editor *w) {
@@ -157,7 +262,7 @@ static void _draw_connection(zvec2 start, zvec2 end, bool direction, i32 zindex)
 }
 
 static i32 _draw_connection_points(zd_node *n, zrect r, bool input, i32 zindex, zcolor colors[2]) {
-    i32 cnt = input ? n->inputs : n->outputs;
+    i32 cnt = input ? n->cnt_in : n->cnt_out;
     if(!cnt) return 0;
     zvec2 draw_offset = { input ? -3 : -5, -9 };
     if(!input) r.pos.x += r.w;
@@ -172,7 +277,7 @@ static i32 _draw_connection_points(zd_node *n, zrect r, bool input, i32 zindex, 
 }
 
 static zrect _znode_padded_rect(zd_node *n, zvec2 origin, zvec2 padding, i32 min_conn_space) {
-    i32 maxcnt = n->inputs > n->outputs ? n->inputs : n->outputs;
+    i32 maxcnt = n->cnt_in > n->cnt_out ? n->cnt_in : n->cnt_out;
     i32 ypad = (min_conn_space * maxcnt - n->rect.h) / 2;
     if(ypad < padding.y) ypad = padding.y;
     zrect rect = _rect_pad(n->rect, (zvec2) { padding.x, ypad });
@@ -203,10 +308,10 @@ static void _znode_editor_draw(zw_node_editor *w) {
 
     _push_rect_cmd(w->widget.used, background, w->widget.zindex);
     for(zd_node_link *c = w->state->head_link; c; c = c->next) {
-        zrect start = _znode_padded_rect(c->A, origin, padding, min_conn_space);
-        zrect end   = _znode_padded_rect(c->B, origin, padding, min_conn_space);
-        start.y += start.h / (2 * c->A->inputs) * (2 * c->input + 1);
-        end.y += end.h / (2 * c->B->outputs) * (2 * c->output + 1);
+        zrect start = _znode_padded_rect(c->input, origin, padding, min_conn_space);
+        zrect end   = _znode_padded_rect(c->output, origin, padding, min_conn_space);
+        start.y += start.h / (2 * c->input->cnt_in) * (2 * c->id_in + 1);
+        end.y += end.h / (2 * c->output->cnt_out) * (2 * c->id_out + 1);
         end.x += end.w;
         _draw_connection(start.pos, end.pos, start.x > end.x, w->widget.zindex);
     }
@@ -214,23 +319,32 @@ static void _znode_editor_draw(zw_node_editor *w) {
     zd_node *n = w->state->head_node;
     FOR_CHILDREN(w) { 
         zrect rect = _znode_padded_rect(n, origin, padding, min_conn_space);
-        if(_ui_clicked(ZM_LEFT_CLICK) && _vec_within(_ui_mpos(), rect))
-            w->state->dragged = n;
         _push_rect_cmd(rect, foreground, child->zindex); 
         // 0 => nothing hovered, index<=-1 => input(1-index), index>=1 => output(index-1)
         i32 index = _draw_connection_points(n, rect, true, w->widget.zindex, in_colors)
             + _draw_connection_points(n, rect, false, w->widget.zindex, out_colors);
-        if(index != 0) { // a connection point is hovered
-            if(_ui_clicked(ZM_LEFT_CLICK)) {
-                w->state->drag_state = index; 
+        if(_ui_cont_hovered(&w->widget)) {
+            if(_ui_clicked(ZM_LEFT_CLICK) && _vec_within(_ui_mpos(), rect))
                 w->state->dragged = n;
-            } else if(_ui_clicked(ZM_RIGHT_CLICK)) {
-                znode_del_links(w->state, n, index);
-            } else if(_ui_released(ZM_LEFT_CLICK) && (index ^ w->state->drag_state) < 0) { 
-                if(index > 0) {
-                    znode_link(w->state, w->state->dragged, -w->state->drag_state - 1, n, index - 1);
-                } else {
-                    znode_link(w->state, n, -index - 1, w->state->dragged, w->state->drag_state - 1); 
+            if(index != 0) { // a connection point is hovered
+                if(_ui_clicked(ZM_LEFT_CLICK)) {
+                    w->state->drag_state = index; 
+                    w->state->dragged = n;
+                } else if(_ui_clicked(ZM_RIGHT_CLICK)) {
+                    if(index < 0) {
+                        znode_del_in_links(w->state, n, -index-1);
+                    }
+                    else {
+                        znode_del_out_links(w->state, n, index-1);
+                    }
+                    reportstuff(w->state);
+                } else if(_ui_released(ZM_LEFT_CLICK) && (index ^ w->state->drag_state) < 0) { 
+                    if(index > 0) {
+                        znode_link(w->state, n, index - 1, w->state->dragged, -w->state->drag_state - 1);
+                    } else {
+                        znode_link(w->state, w->state->dragged, w->state->drag_state - 1, n, -index - 1); 
+                    }
+                    reportstuff(w->state);
                 }
             }
         }
@@ -253,7 +367,7 @@ static void _znode_editor_draw(zw_node_editor *w) {
         if(w->state->drag_state != 0) {
             zvec2 start = _ui_mpos();
             zvec2 end = selected_rect.pos;
-            i32 cnt = index < 0 ? n->inputs : n->outputs;
+            i32 cnt = index < 0 ? n->cnt_in: n->cnt_out;
             if(index > 0) end.x += selected_rect.w;
             end.y += selected_rect.h / (2 * cnt) * (2 * abs(index) - 1);
             _draw_connection(start, end, (start.x > end.x) ^ (index < 0), w->widget.zindex);

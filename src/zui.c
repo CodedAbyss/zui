@@ -151,30 +151,6 @@ void utf8_print(char *text, u32 codepoint, i32 len) {
     text[0] = codepoint & _utf8_masks[len];
 }
 
-// A zui_client is used as a client for server-side rendering.
-// Window / input events are sent to the server, and draw calls sent back to the client
-// The implementation is based on the <send> and <recv> functions.
-// Check the examples folder on how to use a zui_client, or implement your own
-// typedef struct zui_client {
-//     zui_render_fn renderer;
-//     zui_log_fn log;
-//     void *user_data;
-//     zvec2 mouse_pos;
-//     zvec2 window_sz;
-//     u16 mouse_state;
-//     u16 keyboard_modifiers;
-//     u16 font_cnt;
-//     u16 ctx_state;
-//     zui_buf commands;
-//     zmap glyphs;
-//     i32 response;
-//
-//     zui_client_fn send;
-//     zscmd *active_cmd;
-// } zui_client;
-
-// static zui_client *client;
-
 typedef struct zui_ctx {
     zui_render_fn renderer;
     zui_log_fn log;
@@ -215,80 +191,6 @@ typedef struct zui_ctx {
 } zui_ctx;
 
 static zui_ctx *ctx = 0;
-
-
-// initialize a zui_client. <send> defines how to send commands to the server. <recv> defines how to interpret render commands from the server
-// void zui_client_init(zui_client_fn send, zui_render_fn recv, zui_log_fn log, void *user_data) {
-//     static zui_client global_client = { 0 };
-//     client = &global_client;
-//     client->log = log;
-//     client->send = send;
-//     client->renderer = recv;
-//     client->user_data = user_data;
-//     _buf_init(&client->commands, 256, sizeof(void*));
-//     _zmap_init(&client->glyphs);
-// }
-
-// void zui_client_respond(i32 value) {
-//     client->response = value;
-//     zscmd *cmd = client->active_cmd;
-//     if (!cmd) return;
-//     switch (cmd->base.id) {
-//     case ZSCMD_GLYPH: {
-//         zccmd_glyph glyph = {
-//             .header = { ZCCMD_GLYPH, sizeof(zccmd_glyph) },
-//             .c = { cmd->glyph.c.font_id, (u16)client->response, cmd->glyph.c.c }
-//         };
-//         client->send((zccmd*)&glyph, client->user_data);
-//     } break;
-//     }
-// }
-
-// Pushes a command onto the command stack (unless it should be processed immediately).
-// void zui_client_push(zscmd *cmd) {
-//     if (cmd->base.id >= ZSCMD_CLIP && cmd->base.id <= ZSCMD_TEXT) { // draw commands are pushed to the draw stack
-//         if (client->ctx_state) { // only clear previous draw commands once we receive a new set.
-//             client->ctx_state = false;
-//             client->commands.used = 0;
-//         }
-//         memcpy(_buf_alloc(&client->commands, cmd->base.bytes), cmd, cmd->base.bytes);
-//         return;
-//     }
-//     // non-draw commands are executed immediately
-//     client->active_cmd = cmd;
-//     client->renderer(cmd, client->user_data);
-//     client->active_cmd = 0;
-// }
-
-// Push/process a buffer of packed commands onto the command stack.
-// void zui_client_push_raw(char *bytes, i32 len) {
-//     if (len < sizeof(zcmd)) return;
-//     zscmd *cmd = (zscmd*)bytes;
-//     if (cmd->base.bytes > len) return;
-//     zui_client_push((zscmd*)cmd);
-//     zui_client_push_raw(bytes + cmd->base.bytes, len - cmd->base.bytes);
-// }
-
-// Initiate a render on the client. This should be called when a ZSCMD_DRAW command is received.
-// void zui_client_render() {
-//     char *ptr = (char*)client->commands.data;
-//     char *end = ptr + client->commands.used;
-//     while (ptr < end) {
-//         zscmd *cmd = (zscmd*)ptr;
-//         client->renderer(cmd, client->user_data);
-//         ptr += _buf_align(&client->commands, cmd->base.bytes);
-//     }
-//     client->ctx_state = true;
-// }
-
-// static void _zui_send_mouse_data() {
-//     zccmd_mouse data = {
-//         .header = { ZCCMD_MOUSE, sizeof(zccmd_mouse) },
-//         .pos = client->mouse_pos,
-//         .state = client->mouse_state
-//     };
-//     client->send((zccmd*)&data, client->user_data);
-// }
 
 // Logs using specified log function
 void zui_log(char *fmt, ...) {
@@ -368,29 +270,6 @@ void zui_key_char(i32 c) {
     i32 len = utf8_len(c);
     char *utf8 = (char*)zbuf_alloc(&ctx->text, len);
     utf8_print(utf8, c, len);
-    // if (!client) {
-    //     return;
-    // }
-    // // send glyph info for all fonts if necessary
-    // for (u16 id = 0; id < client->font_cnt; id++) {
-    //     u32 value;
-    //     if (_zmap_get(&client->glyphs, _zgc_hash(id, c), &value)) continue;
-    //     zcmd_glyph glyph = {
-    //         .header = { ZCMD_GLYPH_SZ, sizeof(zcmd_glyph) },
-    //         .c = (zglyph_data) {
-    //             .font_id = id,
-    //             .c = c,
-    //             .width = 0
-    //         }
-    //     };
-    //     zui_client_push((zcmd*)&glyph);
-    // }
-    // zccmd_keys key = {
-    //     .header = { ZCCMD_KEYS, sizeof(zccmd_keys) },
-    //     .modifiers = client->keyboard_modifiers,
-    //     .key = c
-    // };
-    // client->send((zccmd*)&key, client->user_data);
 }
 // Report window resize
 void zui_resize(u16 width, u16 height) {
@@ -573,15 +452,16 @@ bool _ui_released(i32 buttons) {
     return !!(~ctx->mouse_state & (ctx->mouse_state ^ ctx->prev_mouse_state) & buttons);
 }
 
-void _ui_print(zw_base *cmd, int indent) {
+void _ui_print(zw_base *cmd, int indent, bool expand_children) {
     zrect b = cmd->bounds, u = cmd->used;
     char *name = ((zui_type*)ctx->registry.data)[cmd->id].name;
     if(cmd->flags & ZF_CONTAINER)
         zui_log("%04x | %-*s[%s] (next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d}, z: %d, children: %d)\n", _ui_index(cmd), indent, "", name, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h, cmd->zindex, ((zw_cont*)cmd)->children);
     else
         zui_log("%04x | %-*s[%s] (next: %04x, bounds: {%d,%d,%d,%d}, used: {%d,%d,%d,%d}, z: %d)\n", _ui_index(cmd), indent, "", name, cmd->next, b.x, b.y, b.w, b.h, u.x, u.y, u.w, u.h, cmd->zindex);
-    FOR_CHILDREN(cmd)
-        _ui_print(child, indent + 2);
+    if(expand_children)
+        FOR_CHILDREN(cmd)
+            _ui_print(child, indent + 2, expand_children);
 }
 
 zvec2 _ui_mpos() { return ctx->mouse_pos; }
@@ -631,6 +511,7 @@ i16 _ui_sz(zw_base *ui, bool axis, i16 bound) {
     }
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
     bool applied = _ui_apply_styles(ui);
+    if(ui->flags & ZF_INDEPENDENT) bound = ui->bounds.sz.e[axis];
     i16 sz = type.size(ui, axis, bound);
     // second pass if FILL on axis with auto size.
     if((ui->flags & (ZF_FILL_X << axis)) && bound == Z_AUTO) {
@@ -647,12 +528,16 @@ i16 _ui_sz(zw_base *ui, bool axis, i16 bound) {
 void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
     if(!ui) return;
     zui_type type = ((zui_type*)ctx->registry.data)[ui->id - ZW_FIRST];
+    if(ui->flags & ZF_INDEPENDENT) {
+        zindex = ui->zindex;
+        pos = ui->used.pos;
+    } else
+        ui->zindex = zindex;
     ui->bounds.x = pos.x;
     ui->bounds.y = pos.y;
-    ui->zindex = zindex;
     _rect_justify(&ui->used, ui->bounds, ui->flags);
     if ((ui->flags & ZF_DISABLED) && (ui->flags & ZF_CONTAINER))
-        FOR_CHILDREN(ui) child->flags |= ZF_DISABLED; // all children of a disabled element must also be disabled
+        FOR_CHILDREN(ui) child->flags |= ZF_DISABLED; // all children of a disabled element must also be disabled 
     if((~ui->flags & ZF_DISABLED) && _vec_within(ctx->mouse_pos, ui->used)) {
         if (zindex >= _ui_widget(ctx->hovered)->zindex)
             ctx->hovered = _ui_index(ui);
@@ -661,7 +546,7 @@ void _ui_pos(zw_base *ui, zvec2 pos, i32 zindex) {
     }
     if(type.pos) { // pos functions are only needed for containers to position children
         bool applied = _ui_apply_styles(ui);
-        type.pos(ui, *(zvec2*)&ui->used, zindex);
+        type.pos(ui, ui->used.pos, zindex);
         if(applied) _ui_restore_styles(ui);
     }
 }
@@ -685,7 +570,15 @@ void _ui_draw(zw_base *ui) {
 
 void zui_print_tree() {
     zui_log("printing tree...\n");
-    _ui_print(_ui_widget(0), 0);
+    _ui_print(_ui_widget(0), 0, true);
+}
+
+void zui_print_active() {
+    zui_log("active widgets...\n");
+    zui_log("hovered: ");
+    _ui_print(_ui_widget(ctx->hovered), 0, false);
+    zui_log("focused: ");
+    _ui_print(_ui_widget(ctx->focused), 0, false);
 }
 
 
@@ -755,20 +648,6 @@ void _zui_qsort(u64 *nums, i32 count) {
     _zui_qsort(nums + j, count - j);
 }
 
-// move all values with either of the high bits set to the end of the array
-ZUI_PRIVATE i32 _zui_partition(u64 *values, i32 len) {
-    i32 i = 0, j = len - 1;
-    while (1) {
-        while (!(values[i] >> 63) && i < j) i++;
-        while ((values[j] >> 63) && i <= j) j--;
-        if (j <= i) break;
-        SWAP(u64, values[i], values[j]);
-    }
-    return j;
-}
-ZUI_PRIVATE void PAUSE() {
-
-}
 // ends any container (window / grid)
 void zui_end() {
     if(ctx->cont_stack.used <= 0) {
@@ -919,7 +798,7 @@ void zui_box() {
     _cont_alloc(ZW_BOX, sizeof(zw_box));
 }
 ZUI_PRIVATE i16 _zui_box_size(zw_box *box, bool axis, i16 bound) {
-    zvec2 padding = zui_stylev(box->widget.id, ZSV_PADDING);
+    zvec2 padding = zui_stylev(box->cmd.id, ZSV_PADDING);
     if (bound != Z_AUTO) bound -= padding.e[axis] * 2;
     i16 auto_sz = 0;
     FOR_CHILDREN(box)
@@ -927,13 +806,40 @@ ZUI_PRIVATE i16 _zui_box_size(zw_box *box, bool axis, i16 bound) {
     return (bound == Z_AUTO ? auto_sz : bound) + padding.e[axis] * 2;
 }
 ZUI_PRIVATE void _zui_box_pos(zw_box *box, zvec2 pos, i32 zindex) {
-    zvec2 padding = zui_stylev(box->widget.id, ZSV_PADDING);
+    zvec2 padding = zui_stylev(box->cmd.id, ZSV_PADDING);
     zvec2 child_pos = { pos.x + padding.x, pos.y + padding.y };
     FOR_CHILDREN(box) _ui_pos(child, child_pos, zindex);
 }
 ZUI_PRIVATE void _zui_box_draw(zw_box *box) {
-    _push_rect_cmd(box->widget.bounds, zui_stylec(ZW_BOX, ZSC_BACKGROUND), box->widget.zindex);
+    _push_rect_cmd(box->widget.bounds, zui_stylec(box->cmd.id, ZSC_BACKGROUND), box->widget.zindex);
     FOR_CHILDREN(box) _ui_draw(child);
+}
+
+void zui_popup(i32 width, i32 height, zd_popup *state) {
+    ctx->flags |= ZF_POPUP | ZF_INDEPENDENT;
+    zw_popup *popup = _cont_alloc(ZW_POPUP, sizeof(zw_popup));
+    popup->widget.bounds.sz = (zvec2) { width, height };
+    popup->state = state;
+    popup->widget.zindex = 1000;
+}
+ZUI_PRIVATE i16 _zui_popup_size(zw_popup *p, bool axis, i16 bound) {
+    if(!p->state->init) {
+        zvec2 diff = _vec_sub(ctx->window_sz, p->widget.bounds.sz);
+        p->state->pos = (zvec2) { diff.x / 2, diff.y / 2 };
+        p->state->init = 1;
+    }
+    // since zw_popup is INDEPENDENT we must also set the position
+    p->cont.used.pos = p->state->pos;
+    return _zui_box_size((zw_box*)p, axis, bound);
+}
+ZUI_PRIVATE void _zui_popup_draw(zw_popup *p) {
+    zvec2 border = { -2, -2 };
+    if(_ui_focused(&p->widget) && _ui_dragged(ZM_LEFT_CLICK))
+        p->state->pos = _vec_add(p->state->pos, _ui_mdelta());
+    _push_rect_cmd(p->widget.bounds, (zcolor) { 255, 255, 255, 255 }, p->widget.zindex);
+    zrect r = _rect_pad(p->widget.bounds, border);
+    _push_rect_cmd(r, zui_stylec(p->cmd.id, ZSC_BACKGROUND), p->widget.zindex);
+    FOR_CHILDREN(p) _ui_draw(child);
 }
 
 void zui_window() {
@@ -1707,6 +1613,7 @@ ZUI_PRIVATE void _zui_tabset_draw(zw_tabset *tabs) {
     i32 zindex = tabs->widget.zindex;
     zw_base *label = _ui_get_child(&tabs->widget);
     FOR_N_SIBLINGS(tabs, label, tabs->label_cnt) {
+        if(!_ui_cont_hovered(&tabs->widget)) continue;
         zrect tab_rect = _rect_pad(label->bounds, padding);
         if (_ui_clicked(ZM_LEFT_CLICK) && _vec_within(ctx->mouse_pos, tab_rect))
             *tabs->state = i;
@@ -1755,6 +1662,15 @@ void zui_init(zui_render_fn fn, zui_log_fn logger, void *user_data) {
     zui_register(ZW_BLANK, "blank", _zui_blank_size, 0, _zui_blank_draw);
 
     zui_register(ZW_WINDOW, "window", _zui_window_size, _zui_window_pos, _zui_box_draw);
+    zui_default_style(ZW_WINDOW,
+        ZSC_BACKGROUND, (zcolor) { 50, 50, 50, 255 },
+        ZSV_PADDING, (zvec2) { 15, 15 },
+        ZS_DONE);
+    zui_register(ZW_POPUP, "popup", _zui_popup_size, _zui_box_pos, _zui_popup_draw);
+    zui_default_style(ZW_POPUP,
+        ZSC_BACKGROUND, (zcolor) { 50, 50, 50, 255 },
+        ZSV_PADDING, (zvec2) { 15, 15 },
+        ZS_DONE);
 
     zui_register(ZW_BOX, "box", _zui_box_size, _zui_box_pos, _zui_box_draw);
     zui_default_style(ZW_BOX,

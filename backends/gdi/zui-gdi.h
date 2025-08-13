@@ -15,7 +15,7 @@ typedef struct zui_gdi_args {
     i32 width;
     i32 height;
     char *title;
-    zui_init_fn init;    
+    zui_init_fn init;
     zui_frame_fn frame;
     zui_close_fn close;
     bool tick_manually;
@@ -138,6 +138,7 @@ static LRESULT CALLBACK _win32_event(HWND wnd, UINT msg, WPARAM wparam, LPARAM l
 	case WM_MBUTTONDOWN: zui_mouse_down(ZM_MIDDLE_CLICK); SetCapture(wnd); return 0;
 	case WM_MBUTTONUP:   zui_mouse_up(ZM_MIDDLE_CLICK); ReleaseCapture();  return 0;
 	case WM_MOUSEMOVE:   zui_mouse_move((zvec2) { LOWORD(lparam), HIWORD(lparam) }); return 0;
+    case WM_MOUSEWHEEL:  zui_mouse_scroll(GET_WHEEL_DELTA_WPARAM(wparam) / 120); return 0;
 	}
 
 	return DefWindowProcW(wnd, msg, wparam, lparam);
@@ -328,7 +329,7 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
 			SetBkMode(app_ctx.memory_dc, TRANSPARENT);
 			SelectObject(app_ctx.memory_dc, app_ctx.font_list[cmd->text.font_id]);
 			ExtTextOutW(app_ctx.memory_dc, cmd->text.pos.x, cmd->text.pos.y, 0, NULL, wstr, wsize, NULL);
-		} break;    
+		} break;
         case ZCMD_DRAW_BEZIER: {
             extern int printf(const char *fmt, ...);
             int cnt = (cmd->base.bytes - sizeof(zcmd_bezier)) / sizeof(zvec2);

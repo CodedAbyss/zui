@@ -4,6 +4,7 @@
 #ifdef ZUI_IMPL
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <windef.h>
 #include <stdlib.h>
 #ifndef ZUI_UTF8
 #error Must Define ZUI_UTF8. GDI backend relies on utf8 functions.
@@ -173,6 +174,7 @@ void _win32_close(zui_gdi_args *args) {
     UnregisterClassW(app_ctx.wnd_class.lpszClassName, app_ctx.wnd_class.hInstance);
 }
 void _win32_setup(zui_gdi_args *args) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 	app_ctx.width = args->width;
 	app_ctx.height = args->height;
 	app_ctx.running = true;
@@ -330,8 +332,21 @@ void gdi_renderer(zcmd_any *cmd, void *user_data) {
 			SelectObject(app_ctx.memory_dc, app_ctx.font_list[cmd->text.font_id]);
 			ExtTextOutW(app_ctx.memory_dc, cmd->text.pos.x, cmd->text.pos.y, 0, NULL, wstr, wsize, NULL);
 		} break;
+		case ZCMD_DRAW_LINES: {
+		    int cnt = (cmd->base.bytes - sizeof(zcmd_bezier)) / sizeof(zvec2);
+			POINT *points = _alloca(sizeof(POINT) * cnt);
+            for(i32 i = 0; i < cnt; i++) {
+                zvec2 v = cmd->bezier.points[i];
+                points[i] = (POINT) { v.x, v.y };
+            }
+            zcolor c = cmd->bezier.color;
+            HPEN pen = CreatePen(PS_SOLID, cmd->lines.width, RGB(c.r, c.g, c.b));
+            HPEN old = (HPEN)SelectObject(app_ctx.memory_dc, pen);
+            Polyline(app_ctx.memory_dc, points, cnt);
+            SelectObject(app_ctx.memory_dc, old);
+            DeleteObject(pen);
+		} break;
         case ZCMD_DRAW_BEZIER: {
-            extern int printf(const char *fmt, ...);
             int cnt = (cmd->base.bytes - sizeof(zcmd_bezier)) / sizeof(zvec2);
             POINT *points = _alloca(sizeof(POINT) * cnt);
             for(i32 i = 0; i < cnt; i++) {

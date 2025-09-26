@@ -1,3 +1,4 @@
+#include <stdio.h>
 #define ZUI_DEV
 #define ZUI_BUF
 #define ZUI_SRC
@@ -9,6 +10,7 @@
 #define max(a, b) ((a) > (b) ? (a) : (b))
 
 //#define assert(bool, msg) { if(!(bool)) printf(msg); exit(1); }
+static char tmp[256];
 
 // Represents a registry entry (defines functions for a widget-id)
 typedef struct zui_type {
@@ -168,7 +170,7 @@ typedef struct zui_ctx {
     u16 font_id;
     u16 longest_registry_name;
     i64 *diagnostics;
-    u32 flags;
+    i32 next_flags;
     i32 latest;
     i32 style_edits;
 
@@ -365,13 +367,17 @@ void *_ui_alloc(i32 id, i32 size) {
     memset(widget, 0, size);
     widget->id = id;
     widget->bytes = size;
-    widget->flags = ctx->flags;
-    ctx->flags &= ZF_PERSIST;
+    widget->flags = ctx->next_flags;
+    ctx->next_flags &= ZF_PERSIST;
     #ifdef ZUI_DEBUG
     widget->meta = ctx->meta;
     ctx->meta = 0;
     #endif
     if(wrapped && !wrapping) zui_end();
+    // if(ctx->cont_stack.used >= sizeof(i32) && (~widget->flags & ZF_CONTAINER)) {
+    //     i32 parent_flags = _ui_widget(*(i32*)zbuf_peek(&ctx->cont_stack, sizeof(i32)))->flags;
+    //     ctx->next_flags = parent_flags & (ZJ_UP | ZJ_DOWN | ZJ_LEFT | ZJ_RIGHT);
+    // }
     return widget;
 }
 // An extention to _ui_alloc for containers, setting the ZF_CONTAINER flag
@@ -424,6 +430,12 @@ void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len,
     r->pos = coord;
     r->color = color;
     memcpy(r->text, text, len);
+}
+void _push_lines_cmd(i32 cnt, zvec2 *points, i32 width, zcolor color, i32 zindex) {
+    zcmd_lines *b = &_draw_alloc(ZCMD_DRAW_LINES, sizeof(zcmd_lines) + cnt * sizeof(zvec2), zindex)->lines;
+    b->color = color;
+    b->width = width;
+    for(i32 i = 0; i < cnt; i++) b->points[i] = points[i];
 }
 void _push_bezier_cmd(i32 cnt, zvec2 *points, i32 width, zcolor color, i32 zindex) {
     zcmd_bezier *b = &_draw_alloc(ZCMD_DRAW_BEZIER, sizeof(zcmd_bezier) + cnt * sizeof(zvec2), zindex)->bezier;
@@ -709,15 +721,15 @@ void zui_register(i32 widget_id, char *widget_name, void *size_cb, void *pos_cb,
 }
 
 void zui_justify(u32 justification) {
-    ctx->flags = justification & 15;
+    ctx->next_flags = (ctx->next_flags & ~15) | (justification & 15);
 }
 
 void zui_disable() {
-    ctx->flags |= ZF_DISABLED;
+    ctx->next_flags |= ZF_DISABLED;
 }
 
 void zui_fill(u32 axis) {
-    ctx->flags |= axis & (ZF_FILL_X | ZF_FILL_Y);
+    ctx->next_flags |= axis & (ZF_FILL_X | ZF_FILL_Y);
 }
 
 u16 zui_new_font(char *family, i32 size) {
@@ -774,6 +786,10 @@ void zui_end() {
         latest->next = ctx->ui.used;
         ctx->latest = container;
     }
+    if(ctx->cont_stack.used >= sizeof(i32)) {
+        i32 parent_flags = _ui_widget(*(i32*)zbuf_peek(&ctx->cont_stack, sizeof(i32)))->flags;
+        ctx->next_flags = parent_flags & (ZJ_UP | ZJ_DOWN | ZJ_LEFT | ZJ_RIGHT);
+    }
     if(cont->flags & ZF_END_PARENT)
         zui_end();
 }
@@ -820,6 +836,8 @@ void zui_render() {
     zw_base *root = _ui_widget(0);
     root->next = 0;
     i64 szx_time = zui_ts();
+    //zui_log("%d,%d\n", ctx->window_sz.x, ctx->window_sz.y) ;
+
     _ui_sz(root, 0, ctx->window_sz.x);
     szx_time = zui_ts() - szx_time;
     i64 szy_time = zui_ts();
@@ -927,7 +945,7 @@ ZUI_PRIVATE void _zui_box_draw(zw_box *box) {
 }
 
 void zui_popup(i32 width, i32 height, zd_popup *state) {
-    ctx->flags |= ZF_SELF_POS | ZF_SELF_WIDTH | ZF_SELF_HEIGHT;
+    ctx->next_flags |= ZF_SELF_POS | ZF_SELF_WIDTH | ZF_SELF_HEIGHT;
     zw_popup *popup = _cont_alloc(ZW_POPUP, sizeof(zw_popup));
     popup->widget.bounds.sz = (zvec2) { width, height };
     popup->state = state;
@@ -960,7 +978,7 @@ ZUI_PRIVATE void _zui_popup_draw(zw_popup *p) {
 
 void zui_window() {
     ctx->ui.used = 0;
-    ctx->flags = 0;
+    ctx->next_flags = 0;
     _cont_alloc(ZW_WINDOW, sizeof(zw_box));
 }
 ZUI_PRIVATE i16 _zui_window_size(zw_box *window, bool axis, i16 bound) {
@@ -1031,28 +1049,31 @@ void zui_labelf(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     i32 n = 0;
-    for(; *fmt; fmt++) {
-        if(*fmt != '%') {
-            _append(l->text, n++, *fmt);
-            continue;
-        }
-        fmt++;
-        i32 mod = 0;
-        while(*fmt >= '0' && *fmt <= '9')
-            mod = (mod * 10) - '0' + *fmt++;
-
-        switch(*fmt) {
-            case 's': {
-                char *s = va_arg(args, char*);
-                for(; *s; s++) _append(l->text, n++, *s);
-            } break;
-            case 'x': n += _append_x32(l->text, n, va_arg(args, u32), mod); break;
-            case 'd': n += _append_i32(l->text, n, va_arg(args, i32), 0); break;
-            case 'f': n += _append_f64(l->text, n, va_arg(args, double), 0, 2); break;
-            case '%': _append(l->text, n++, '%'); break;
-        }
-    }
+    vsnprintf(tmp, 256, fmt, args);
+    for(i32 i = 0; i < 256 && tmp[i]; i++)
+        _append(l->text, n++, tmp[i]);
     _append(l->text, n, 0);
+    // for(; *fmt; fmt++) {
+    //     if(*fmt != '%') {
+    //         _append(l->text, n++, *fmt);
+    //         continue;
+    //     }
+    //     fmt++;
+    //     i32 mod = 0;
+    //     while(*fmt >= '0' && *fmt <= '9')
+    //         mod = (mod * 10) - '0' + *fmt++;
+
+    //     switch(*fmt) {
+    //         case 's': {
+    //             char *s = va_arg(args, char*);
+    //             for(; *s; s++) _append(l->text, n++, *s);
+    //         } break;
+    //         case 'x': n += _append_x32(l->text, n, va_arg(args, u32), mod); break;
+    //         case 'd': n += _append_i32(l->text, n, va_arg(args, i32), 0); break;
+    //         case 'f': n += _append_f64(l->text, n, va_arg(args, double), 0, 2); break;
+    //         case '%': _append(l->text, n++, '%'); break;
+    //     }
+    // }
     l->widget.bytes += n;
     va_end(args);
 }
@@ -1331,7 +1352,7 @@ i32 zui_combo(char *tooltip, zd_combo *state) {
     zui_label("\xE2\x96\xBC");
     zui_end();
     zui_dropdown_flags(ZF_END_PARENT | ZF_SELF_HEIGHT | ZJ_DOWN, &state->dropdown);
-    ctx->flags |= ZF_END_PARENT | ZF_WRAPPER;
+    ctx->next_flags |= ZF_END_PARENT | ZF_WRAPPER;
     ctx->wrapper_data = state;
     ctx->wrapper = zui_combo_wrap_child;
     zui_style(ZW_COL, ZSV_SPACING, (zvec2) { 0, 0 }, ZS_DONE);

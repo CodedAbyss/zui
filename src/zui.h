@@ -82,6 +82,7 @@ enum ZUI_STYLEABLE {
     ZS_DONE = 0,
     ZSC_BACKGROUND,
     ZSC_FOREGROUND,
+    ZSC_SECONDARY,
     ZSC_HOVERED,
     ZSC_UNFOCUSED,
     ZSV_PADDING,
@@ -128,6 +129,7 @@ enum ZUI_CMDS {
     ZCMD_DRAW_RECT,
     ZCMD_DRAW_TEXT,
     ZCMD_DRAW_BEZIER,
+    ZCMD_DRAW_LINES,
         // _ZCMD_KEYCODE,   // zui_key_char
         // _ZCMD_MOUSE,     // zcmd *zui_mouse_*
         // _ZCMD_RESIZE,    // zcmd *zui_resize(u16 w, u16 h);
@@ -142,7 +144,7 @@ enum ZUI_CMDS {
 typedef struct zcmd_clip { zcmd header; zrect rect; } zcmd_clip;                                          // set clip rect
 typedef struct zcmd_rect { zcmd header; zrect rect; zcolor color; } zcmd_rect;                            // draw rect
 typedef struct zcmd_text { zcmd header; zvec2 pos;  zcolor color; u16 font_id; char text[0]; } zcmd_text; // draw text
-typedef struct zcmd_bezier { zcmd header; zcolor color; i32 width; zvec2 points[0]; } zcmd_bezier;        // draw bezier
+typedef struct zcmd_lines { zcmd header; zcolor color; i32 width; zvec2 points[0]; } zcmd_bezier, zcmd_lines; // draw bezier
 typedef struct zcmd_get_clipboard { zcmd header; char *response; } zcmd_get_clipboard;                    // get clipboard
 typedef struct zcmd_set_clipboard { zcmd header; char text[0]; } zcmd_set_clipboard;                      // set clipboard
 typedef struct zcmd_reg_font { zcmd header; u16 font_id; u16 size; u16 response_height; char family[0]; } zcmd_reg_font; // register font
@@ -153,6 +155,7 @@ typedef union {
     zcmd_clip clip;
     zcmd_rect rect;
     zcmd_text text;
+    zcmd_lines lines;
     zcmd_bezier bezier;
     zcmd_reg_font font;
     zcmd_glyph_sz glyph_sz;
@@ -263,6 +266,7 @@ ZUI_API zrect _rect_pad(zrect r, zvec2 padding);
 ZUI_API void _push_rect_cmd(zrect rect, zcolor color, i32 zindex);
 ZUI_API void _push_clip_cmd(zrect rect, i32 zindex);
 ZUI_API void _push_text_cmd(u16 font_id, zvec2 coord, zcolor color, char *text, i32 len, i32 zindex);
+ZUI_API void _push_lines_cmd(i32 cnt, zvec2 *points, i32 width, zcolor color, i32 zindex);
 ZUI_API void _push_bezier_cmd(i32 cnt, zvec2 *points, i32 width, zcolor color, i32 zindex);
 ZUI_API zvec2 _vec_max(zvec2 a, zvec2 b);
 ZUI_API zvec2 _vec_min(zvec2 a, zvec2 b);
